@@ -1,0 +1,30 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Environment variables
+.env
+.env.*
+
+# Datasets
+data/raw/
+data/proc512/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+
+# Generated outputs
+outputs/
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
