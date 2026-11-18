@@ -31,12 +31,11 @@
 6. [Safety rules and where they are enforced](#-safety-rules-and-where-they-are-enforced)
 7. [Machine-learning pipeline](#-machine-learning-pipeline)
 8. [Results](#-results): internal test, external validation, robustness
-9. [Data model](#-data-model)
-10. [API reference](#-api-reference)
-11. [Development workflow](#-development-workflow)
-12. [Project structure](#-project-structure)
-13. [Limitations](#-limitations)
-14. [Troubleshooting & FAQ](#-troubleshooting--faq)
+9. [API reference](#-api-reference)
+10. [Development workflow](#-development-workflow)
+11. [Project structure](#-project-structure)
+12. [Limitations](#-limitations)
+
 
 ---
 
@@ -228,7 +227,7 @@ stateDiagram-v2
 
 ### Prerequisites
 - **Python 3.11+**, **Node.js 20+**, **Docker Desktop**
-- The trained model files in `backend/model/`: `dr.onnx`, `best.pt`, `calib.json` (not stored in git, see [Development workflow](#-development-workflow))
+- The trained model files in `backend/model/`: `dr.onnx`, `best.pt`, `calib.json` 
 
 ### 1. Start the database and image storage
 ```bash
@@ -426,10 +425,7 @@ The gate protects the model: on low-light and over-exposed images, accuracy on t
 
 Rule fixed in advance: accept a level if QWK falls by at most 0.05 and AUROC by at most 0.02 from the clean baseline. Quality **80** is the lowest that passes, so files below it are rejected. Differences of about ±0.02 between neighbouring levels are sampling noise (1,200 images).
 
-![JPEG curve](docs/figures/jpeg_curve.png)
 
-### Explainability
-![Grad-CAM++ example](docs/figures/gradcam.png)
 
 ---
 
