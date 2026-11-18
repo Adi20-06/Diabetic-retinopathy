@@ -139,7 +139,7 @@ def sync(payload: str = Form(...),
         q = clean(assess(img))    
         jq = jpegq.estimate_quality(ob)               # judged on the ORIGINAL file the nurse uploaded
         q["jpeg_quality"] = jq
-        if jq is not None and jq < jpegq.MIN_QUALITY:
+        if jq is not None and round(jq) < jpegq.MIN_QUALITY:
             q["reasons"] = list(q.get("reasons", [])) + ["Image is heavily compressed, capture or export at a higher JPEG quality"]
             q["gradable"] = False                                       # server-side gate decides
         base = f"{s.id}/{eye}-{e.original_sha256[:12]}"

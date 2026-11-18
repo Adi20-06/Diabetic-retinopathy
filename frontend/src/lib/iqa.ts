@@ -121,7 +121,7 @@ export async function assessBlob(blob: Blob, original?: Blob): Promise<IqaOutcom
   let r: IqaOutcome;
   try { r = assessBitmap(bmp); } finally { bmp.close(); }
   const q = original ? await estimateJpegQuality(original) : null;   // judged on the original file
-  const ok = q === null || q >= MIN_JPEG_QUALITY;
+  const ok = q === null || Math.round(q) >= MIN_JPEG_QUALITY;
   const checks: IqaCheckResult[] = [...r.checks, {
     id: "compression", ok, value: q === null ? "not applicable" : `about ${Math.round(q)}`,
     required: `at least ${MIN_JPEG_QUALITY}`, message: "Image is heavily compressed, capture or export at a higher JPEG quality",

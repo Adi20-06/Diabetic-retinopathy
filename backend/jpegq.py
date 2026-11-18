@@ -2,7 +2,7 @@ import io
 import numpy as np
 from PIL import Image
 
-MIN_QUALITY = 50   # set this from the curve: the suggested value printed by jpeg_curve.py
+MIN_QUALITY = 80   # set this from the curve: the suggested value printed by jpeg_curve.py
 
 _STD = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
         14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,

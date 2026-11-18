@@ -6,7 +6,7 @@ src = sys.argv[1]
 r = requests.post(f"{B}/auth/login", json={"username": "nurse1", "password": "nurse123"})
 H = {"Authorization": "Bearer " + r.json()["token"]}
 
-for q in (92, 40, 15):
+for q in (92, 85, 80, 75, 40):
     b = io.BytesIO(); Image.open(src).convert("RGB").save(b, "JPEG", quality=q); raw = b.getvalue()
     h = hashlib.sha256(raw).hexdigest()
     payload = dict(client_id=str(uuid.uuid4()), patient_id="P003", created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
