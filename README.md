@@ -433,76 +433,7 @@ Rule fixed in advance: accept a level if QWK falls by at most 0.05 and AUROC by 
 
 ---
 
-## 🗃️ Data model
 
-```mermaid
-erDiagram
-    PATIENTS ||--o{ SCREENINGS : "has"
-    PATIENTS ||--o{ APPOINTMENTS : "requests"
-    PATIENTS ||--o| USERS : "can log in as"
-    SCREENINGS ||--|{ EYE_RECORDS : "one per eye"
-    SCREENINGS ||--o{ REVIEWS : "append-only"
-
-    PATIENTS {
-        string id PK "P001, P101 ..."
-        string name
-        string dob
-        string gender
-        string mobile
-        bool verified
-        bool consent
-    }
-    USERS {
-        string username PK
-        string password_hash "salted PBKDF2"
-        string role "nurse, doctor, patient"
-    }
-    SCREENINGS {
-        string id PK "SCR-1001 ..."
-        string client_id UK "blocks duplicate uploads"
-        string status
-        datetime synced_at
-        datetime sent_to_doctor
-        string ai_state
-        string doctor_review
-        datetime report_released
-    }
-    EYE_RECORDS {
-        int id PK
-        string eye "right or left"
-        string state
-        string original_sha256
-        string processing_sha256
-        json quality "server gate result"
-        json ai "original AI prediction, never edited"
-        string heatmap_key
-    }
-    REVIEWS {
-        int id PK
-        string by
-        string decision
-        json final_grades
-        bool overrides
-        string notes
-    }
-    APPOINTMENTS {
-        string id PK
-        string date
-        string reason
-        string status "requested, confirmed, cancelled"
-    }
-    AUDIT_LOG {
-        int id PK
-        string action
-        json detail
-        string prev_hash
-        string hash "SHA-256 chain"
-    }
-```
-
-The **audit log** is separate and hash-chained: each row stores the hash of the previous one, so editing or deleting any row breaks the chain, which the Audit page reports.
-
----
 
 ## 🔌 API reference
 
@@ -599,50 +530,12 @@ dr-triage/
 
 ---
 
-## ❓ Troubleshooting & FAQ
 
-<details>
-<summary><b>The API cannot connect to the database ("role dr does not exist")</b></summary>
-
-A native PostgreSQL on Windows may already be using port 5432. This project's database is mapped to **5433** on purpose; check that `DB_URL` in `backend/settings.py` uses `127.0.0.1:5433`.
-</details>
-
-<details>
-<summary><b>I changed a database model and the API fails with "column does not exist"</b></summary>
-
-`create_all` does not alter existing tables. Add an `ALTER TABLE … ADD COLUMN IF NOT EXISTS` at startup, or wipe the dev database: `docker compose down -v` then `docker compose up -d`.
-</details>
-
-<details>
-<summary><b>The web app says "Cannot reach the server"</b></summary>
-
-Check that uvicorn is running, that `frontend/.env.local` has `NEXT_PUBLIC_API_URL`, and that you restarted `npm run dev` after creating it.
-</details>
-
-<details>
-<summary><b>The doctor sees "AI results are not available yet"</b></summary>
-
-AI runs on the server when the nurse's record **syncs after Send to doctor**. Open *Offline Queue & Sync* on the nurse side and sync.
-</details>
-
-<details>
-<summary><b>A good photo was rejected for compression</b></summary>
-
-The file's JPEG quality is below 80, often because it was forwarded through a chat app. Capture again, or export the original file from the camera.
-</details>
-
-<details>
-<summary><b>Why is a patient graded "No DR" but flagged Referable?</b></summary>
-
-Referral uses the summed probability of moderate-or-worse (threshold 0.09), not just the top grade. This is intentional, to keep sensitivity high.
-</details>
-
----
 
 <div align="center">
 
 **BIS586 Mini Project · Group 10** · Guide: Prof. Krupesha · RV Institute of Technology and Management
 
-*Team: add member names here*
+*Team: Aditya S , Varsha Madyalkar , Jagan Sai K , M Jaiswaroop
 
 </div>
