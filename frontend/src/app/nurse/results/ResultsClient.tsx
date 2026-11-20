@@ -5,7 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { Printer } from "lucide-react";
 import { Badge, Button, Card, PageHeader, buttonStyles } from "@/components/ui";
 import StatusBadge, { EyeBadge } from "@/components/StatusBadge";
-import { ageFrom, formatDateTime, sendToDoctor, useDb, type Eye } from "@/lib/db";
+import DoctorPicker from "@/components/DoctorPicker";
+import { ageFrom, formatDateTime, reassignDoctor, sendToDoctor, useDb, type Eye } from "@/lib/db";
 
 const EYES: { key: Eye; label: string }[] = [
   { key: "right", label: "Right eye (OD)" },
@@ -16,6 +17,8 @@ export default function ResultsClient() {
   const db = useDb();
   const id = useSearchParams().get("id");
   const [sheet, setSheet] = useState(false);
+  const [picker, setPicker] = useState<"send" | "change" | null>(null);
+  const [msg, setMsg] = useState("");
   if (!db) return null;
 
   const s = db.screenings.find((x) => x.id === id);
@@ -84,22 +87,46 @@ export default function ResultsClient() {
         </div>
 
         <Card className="mt-6">
-          <dl className="grid gap-5 text-sm sm:grid-cols-2 xl:grid-cols-4">
+          <dl className="grid gap-5 text-sm sm:grid-cols-2 xl:grid-cols-5">
             {[
               ["Screening ID", s.id],
               ["AI processing", aiLabel],
               ["Doctor review", reviewLabel],
+              ["Assigned doctor", s.assignedName ?? s.assignedTo ?? "Not chosen yet"],
               ["Sync", s.synced ? "Synced" : "Waiting to sync"],
             ].map(([k, v]) => (
               <div key={k}><dt className="text-xs uppercase tracking-wide text-muted-strong">{k}</dt><dd className="mt-1 font-display text-lg font-semibold text-deep">{v}</dd></div>
             ))}
           </dl>
           <div className="mt-6 flex flex-wrap gap-3 border-t border-deep/10 pt-5">
-            <Button variant="gold" disabled={!canSend} onClick={() => sendToDoctor(s.id)}>Send to doctor</Button>
+            <Button variant="gold" disabled={!canSend} onClick={() => { setMsg(""); setPicker("send"); }}>Send to doctor</Button>
+            {s.sentToDoctor && s.doctorReview !== "reviewed" && (
+              <Button variant="ghost" disabled={!s.synced} onClick={() => { setMsg(""); setPicker("change"); }}>Change doctor</Button>
+            )}
             <Button variant="ghost" onClick={() => setSheet(true)}>Generate worker triage sheet</Button>
           </div>
           {s.status !== "completed" && <p className="mt-3 text-xs text-muted-strong">Every selected eye must have an accepted, gradable image before sending to the doctor.</p>}
         </Card>
+        {picker && (
+          <div className="mt-6">
+            <DoctorPicker
+              title={picker === "send" ? "Send to which doctor?" : "Change doctor"}
+              current={s.assignedTo}
+              onCancel={() => setPicker(null)}
+              onSend={async (d) => {
+                if (picker === "send") {
+                  sendToDoctor(s.id, d);
+                  setMsg(`Saved. It will go to ${d.name} when you sync.`);
+                } else {
+                  const err = await reassignDoctor(s.id, d);
+                  setMsg(err ?? `Changed. ${d.name} will now see this case.`);
+                }
+                setPicker(null);
+              }}
+            />
+          </div>
+        )}
+        {msg && <p role="status" className="mt-4 rounded-lg bg-ok-bg px-3 py-2 text-sm text-ok">{msg}</p>}
       </div>
 
       {sheet && (
@@ -118,6 +145,7 @@ export default function ResultsClient() {
               ["Mobile", p?.mobile ?? ""],
               ["Screened", formatDateTime(s.createdAt)],
               ["Operator", s.operatorId],
+              ["Sent to", s.assignedName ?? s.assignedTo ?? "Not sent yet"],
               ["Generated", formatDateTime(new Date().toISOString())],
             ].map(([k, v]) => (
               <div key={k}><dt className="text-xs uppercase tracking-wide text-muted-strong">{k}</dt><dd className="mt-0.5 font-medium text-deep">{v}</dd></div>

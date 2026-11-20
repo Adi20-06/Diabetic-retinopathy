@@ -4,6 +4,7 @@ import Link from "next/link";
 import { CheckCircle2, Search } from "lucide-react";
 import { Button, Card, Field, PageHeader, buttonStyles, inputClass } from "@/components/ui";
 import { addPatient, ageFrom, findDuplicates, searchPatients, useDb, type Patient } from "@/lib/db";
+import { TempPasswordCard } from "@/components/TempPasswordCard";
 
 
 export default function RegistrationPage() {
@@ -17,6 +18,7 @@ export default function RegistrationPage() {
   const [dups, setDups] = useState<Patient[]>([]);
   const [saved, setSaved] = useState<Patient | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tmp, setTmp] = useState("");
   if (!db) return null;
 
   const matches = searchPatients(db, q);
@@ -43,10 +45,11 @@ export default function RegistrationPage() {
     if (r.duplicates && !force) return setDups(r.duplicates);
     if (r.error) return setError(r.error);
     setSaved(r.patient!);
+    setTmp(r.tempPassword ?? "");
   }
 
   function again() {
-    setSaved(null); setDups([]); setDob(""); setIdChecked(false); setConsent(false); setError("");
+    setSaved(null); setDups([]); setDob(""); setIdChecked(false); setConsent(false); setError(""); setTmp("");
   }
 
   if (saved) {
@@ -61,6 +64,7 @@ export default function RegistrationPage() {
             <div className="text-xs uppercase tracking-wide text-muted-strong">Patient ID</div>
             <div className="font-display text-3xl font-semibold text-deep">{saved.id}</div>
           </div>
+          {tmp && <TempPasswordCard patientId={saved.id} name={saved.name} password={tmp} />}
           <div className="mt-6 flex flex-wrap gap-3">
             <Link href={`/nurse/verification?id=${saved.id}`} className={buttonStyles("gold")}>Start screening</Link>
             <Button variant="ghost" onClick={again}>Register another</Button>

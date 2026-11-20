@@ -12,13 +12,26 @@ now = lambda: dt.datetime.now(dt.timezone.utc)
 def get_db():
     with SessionLocal() as db: yield db
 
+class Centre(Base):
+    __tablename__ = "centres"
+    id = Column(String(12), primary_key=True)               # PHC-001
+    name = Column(String(120), nullable=False)
+    district = Column(String(80), default="")
+    active = Column(Boolean, default=True)
+
 class User(Base):
     __tablename__ = "users"
     username = Column(String(40), primary_key=True)
     password_hash = Column(String(200), nullable=False)
     role = Column(String(10), nullable=False)               # nurse | doctor | patient
     name = Column(String(120), nullable=False)
-    patient_id = Column(String(12), ForeignKey("patients.id"))   # set only for role=patient
+    patient_id = Column(String(12), ForeignKey("patients.id"))
+    centre_id = Column(String(12), ForeignKey("centres.id"))
+    active = Column(Boolean, default=True)
+    must_change = Column(Boolean, default=False)             # true while the password is a temporary one
+    failed_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime(timezone=True))
+    password_changed_at = Column(DateTime(timezone=True), default=now)
 
 class Patient(Base):
     __tablename__ = "patients"
@@ -30,6 +43,7 @@ class Patient(Base):
     history = Column(String(200), default="")
     verified = Column(Boolean, default=False)
     consent = Column(Boolean, default=False)
+    centre_id = Column(String(12), ForeignKey("centres.id"))
     created_by = Column(String(40))
     created_at = Column(DateTime(timezone=True), default=now)
 
@@ -47,6 +61,7 @@ class Screening(Base):
     ai_state = Column(String(10))                           # queued | done
     doctor_review = Column(String(10))                      # pending | reviewed
     report_released = Column(DateTime(timezone=True))
+    assigned_to = Column(String(40))                        # doctor's username chosen by the nurse
 
 class EyeRecord(Base):
     __tablename__ = "eye_records"

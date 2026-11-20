@@ -38,7 +38,7 @@ export default function GradcamViewer({ imageKey, imageUrl, heatUrl, seed }: { i
   const url = imageUrl ?? local;
   const [demo, setDemo] = useState("");
   const [show, setShow] = useState(true);
-  const [opacity, setOpacity] = useState(60);
+  const [opacity, setOpacity] = useState(20);
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number } | null>(null);

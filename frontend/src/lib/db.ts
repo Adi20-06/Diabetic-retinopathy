@@ -47,6 +47,8 @@ export type Screening = {
   aiResult?: { right?: EyeAi; left?: EyeAi };
   reviewHistory?: ReviewEntry[];
   reportReleased?: string;
+  assignedTo?: string; 
+  assignedName?: string;
   syncState?: "syncing" | "failed" | "synced";
   syncedAt?: string;
   syncError?: string;
@@ -146,12 +148,12 @@ export function replacePatients(list: Patient[]) {
 export async function addPatient(
   input: { name: string; dob: string; gender: string; mobile: string; history: string },
   force = false
-): Promise<{ patient?: Patient; duplicates?: Patient[]; error?: string }> {
+): Promise<{ patient?: Patient; tempPassword?: string; duplicates?: Patient[]; error?: string }> {
   try {
     const x = await api<ServerPatient>(`/patients?force=${force}`, { json: { ...input, id_verified: true, consent: true } });
     const p = toPatient(x);
     mutate((db) => { db.patients = [p, ...db.patients.filter((q) => q.id !== p.id)]; });
-    return { patient: p };
+    return { patient: p, tempPassword: x.temp_password };
   } catch (e) {
     if (e instanceof ApiError && e.status === 409 && e.detail && typeof e.detail === "object")
       return { duplicates: ((e.detail as { matches: ServerPatient[] }).matches ?? []).map(toPatient) };
@@ -167,6 +169,16 @@ export async function markVerified(id: string): Promise<string | null> {
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : "Something went wrong.";
+  }
+}
+
+/** Nurse issues a new temporary password for a patient in their centre. */
+export async function resetPatientPassword(id: string): Promise<{ tempPassword?: string; error?: string }> {
+  try {
+    const r = await api<{ temp_password: string }>(`/patients/${id}/reset-password`, { method: "POST" });
+    return { tempPassword: r.temp_password };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Something went wrong." };
   }
 }
 
@@ -246,15 +258,39 @@ export function rejectImage(id: string, eye: Eye) {
   });
 }
 
-export function sendToDoctor(id: string) {
+export type DoctorOpt = { username: string; name: string };
+
+export function sendToDoctor(id: string, doctor: DoctorOpt) {
   mutate((db) => {
     const s = db.screenings.find((x) => x.id === id);
     if (!s || s.status !== "completed") return;
     s.sentToDoctor = new Date().toISOString();
     s.doctorReview = "pending";
     s.ai = "queued";
+    s.assignedTo = doctor.username; s.assignedName = doctor.name;
     s.synced = false;
   });
+}
+
+const DOC_KEY = "dr_doctors";
+/** Fresh list when online; the last known list when offline, so a nurse can still choose a doctor. */
+export async function getDoctors(): Promise<DoctorOpt[]> {
+  try {
+    const list = await api<DoctorOpt[]>("/doctors");
+    try { localStorage.setItem(DOC_KEY, JSON.stringify(list)); } catch {}
+    return list;
+  } catch {
+    try { return JSON.parse(localStorage.getItem(DOC_KEY) ?? "[]") as DoctorOpt[]; } catch { return []; }
+  }
+}
+
+/** For a case already sent and uploaded, whose review is still pending. */
+export async function reassignDoctor(id: string, doctor: DoctorOpt): Promise<string | null> {
+  try {
+    const x = await api<ServerScreening>(`/screenings/${id}/assign`, { json: { doctor: doctor.username } });
+    mutate((db) => { const s = db.screenings.find((q) => q.id === id); if (s) { s.assignedTo = x.assigned_to ?? undefined; s.assignedName = x.assigned_name ?? undefined; } });
+    return null;
+  } catch (e) { return e instanceof Error ? e.message : "Something went wrong."; }
 }
 
 // ---------- server types ----------
@@ -271,7 +307,7 @@ export type ServerScreening = {
   id: string; client_id: string | null; patient_id: string; operator?: string | null; status: ScreeningStatus;
   failed_checks: number; created_at: string; synced_at: string | null; sent_to_doctor: string | null;
   ai_state: "queued" | "done" | null; doctor_review: "pending" | "reviewed" | null; report_released: string | null;
-  eyes: Partial<Record<Eye, ServerEye>>; reviews?: ServerReview[]; send_rejected?: string | null;
+  eyes: Partial<Record<Eye, ServerEye>>; reviews?: ServerReview[]; send_rejected?: string | null;  assigned_to?: string | null; assigned_name?: string | null;
 };
 export type PatientView = {
   id: string; created_at: string; sent_at?: string | null; released_at?: string | null;
@@ -309,7 +345,7 @@ export function fromStaff(x: ServerScreening): Screening {
     operatorId: x.operator ?? "", status: x.status, failedChecks: x.failed_checks, synced: true,
     syncedAt: x.synced_at ?? undefined, sentToDoctor: x.sent_to_doctor ?? undefined,
     doctorReview: x.doctor_review ?? undefined, ai: x.ai_state ?? undefined, reportReleased: x.report_released ?? undefined,
-    images: {}, quality: {}, aiResult: {}, captures: [], serverChecksum: {},
+    images: {}, quality: {}, aiResult: {}, captures: [], serverChecksum: {},     assignedTo: x.assigned_to ?? undefined, assignedName: x.assigned_name ?? undefined,
   };
   for (const eye of ["right", "left"] as Eye[]) {
     const e = x.eyes[eye];
@@ -351,7 +387,7 @@ export function mergeServerScreenings(list: Screening[], role: "nurse" | "doctor
       if (l) used.add(l);
       if (!l) out.push(sv);
       else if (!l.synced) out.push(l);
-      else if (role === "nurse") out.push({ ...l, id: sv.id, status: sv.status, sentToDoctor: sv.sentToDoctor, doctorReview: sv.doctorReview, ai: sv.ai, reportReleased: sv.reportReleased });
+      else if (role === "nurse") out.push({ ...l, id: sv.id, status: sv.status, sentToDoctor: sv.sentToDoctor, doctorReview: sv.doctorReview, ai: sv.ai, reportReleased: sv.reportReleased , assignedTo: sv.assignedTo, assignedName: sv.assignedName });
       else out.push(sv);
     }
     for (const l of db.screenings) if (!used.has(l)) out.push(l);
@@ -392,7 +428,7 @@ export async function syncScreening(id: string, opts: { fail?: boolean } = {}): 
         capture_count: (s0.captures ?? []).filter((c) => c.eye === eye).length || 1, quality: s0.quality?.[eye] ?? null,
       };
     }
-    form.append("payload", JSON.stringify({ client_id: s0.clientId, patient_id: s0.patientId, created_at: s0.createdAt, send_to_doctor: !!s0.sentToDoctor, eyes }));
+    form.append("payload", JSON.stringify({ client_id: s0.clientId, patient_id: s0.patientId, created_at: s0.createdAt, send_to_doctor: !!s0.sentToDoctor, doctor: s0.assignedTo ?? null, eyes }));
     const r = await api<ServerScreening>("/sync/screenings", { form });
 
     change((s) => {
@@ -410,6 +446,8 @@ export async function syncScreening(id: string, opts: { fail?: boolean } = {}): 
       }
       if (r.sent_to_doctor) { s.sentToDoctor = r.sent_to_doctor; s.doctorReview = r.doctor_review ?? "pending"; s.ai = r.ai_state ?? "queued"; }
       else { delete s.sentToDoctor; delete s.doctorReview; delete s.ai; }
+      s.assignedTo = r.assigned_to ?? s.assignedTo; s.assignedName = r.assigned_name ?? s.assignedName;
+      if (r.send_rejected) s.syncError = r.send_rejected;
     });
     return "synced";
   } catch (e) {
@@ -437,6 +475,12 @@ export async function releaseReport(id: string): Promise<string | null> {
 
 /** On logout: remove everything that came from the server. Records still waiting to upload are kept. */
 export function clearSyncedData() {
+  try { localStorage.removeItem("dr_doctors"); } catch {}
   try { mutate((db) => { db.patients = []; db.screenings = db.screenings.filter((s) => !s.synced); }); } catch {}
 }
 
+export type ServerPatient = {
+  id: string; name: string; dob: string; gender: string; mobile: string;
+  history?: string; verified: boolean; created_at?: string; registered_by?: string;
+  temp_password?: string;
+};

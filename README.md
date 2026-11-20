@@ -27,15 +27,17 @@
 2. [Choose your path](#-choose-your-path)
 3. [How it works](#-how-it-works): architecture, workflow, quality gate, triage logic, sync
 4. [Quick start (local)](#-quick-start-local)
-5. [Roles & portals](#-roles--portals)
-6. [Safety rules and where they are enforced](#-safety-rules-and-where-they-are-enforced)
-7. [Machine-learning pipeline](#-machine-learning-pipeline)
-8. [Results](#-results): internal test, external validation, robustness
-9. [API reference](#-api-reference)
-10. [Development workflow](#-development-workflow)
-11. [Project structure](#-project-structure)
-12. [Limitations](#-limitations)
-
+5. [Accounts, centres and passwords](#-accounts-centres-and-passwords)
+6. [Roles & portals](#-roles--portals)
+7. [Safety rules and where they are enforced](#-safety-rules-and-where-they-are-enforced)
+8. [Machine-learning pipeline](#-machine-learning-pipeline)
+9. [Results](#-results): internal test, external validation, robustness
+10. [Data model](#-data-model)
+11. [API reference](#-api-reference)
+12. [Development workflow](#-development-workflow)
+13. [Project structure](#-project-structure)
+14. [Limitations](#-limitations)
+15. [Troubleshooting & FAQ](#-troubleshooting--faq)
 
 ---
 
@@ -49,6 +51,7 @@ Diabetic retinopathy (DR) is a leading cause of preventable blindness, but eye s
 | No reliable internet | The nurse app works **fully offline** and syncs later, with duplicate protection and checksum verification |
 | AI that is overconfident or a black box | **Calibrated** probabilities, an explicit **Uncertain** state, and **Grad-CAM++** heatmaps showing where the model looked |
 | Trust and accountability | AI result is **immutable**; the doctor's decision is a **separate, append-only** record; every action is in a **tamper-evident audit chain** |
+| Many staff and several centres | Every person has **their own login**; staff see **only their own health centre**; the nurse **chooses which doctor** gets each case |
 | Patients left uninformed | Patients see only the **doctor-reviewed** report, in plain language, with the heatmap |
 
 ## 🧭 Choose your path
@@ -92,12 +95,14 @@ flowchart LR
     S3[("RustFS<br/>S3-compatible storage")]
     DA["Doctor web app"]
     PA["Patient web app"]
+    AA["Admin web app<br/>staff accounts"]
 
     Q -- "sync when online<br/>(checksums, no duplicates)" --> API
     API --- PG
     API --- S3
     DA <--> API
     PA <--> API
+    AA <--> API
 ```
 
 ### 2. The screening workflow, end to end
@@ -114,14 +119,14 @@ flowchart TD
     E -- Gradable --> F["Nurse accepts image"]
     F --> G{"All selected<br/>eyes accepted?"}
     G -- No --> D
-    G -- Yes --> H["Send to doctor<br/>(saved in offline queue)"]
+    G -- Yes --> G2["Choose a doctor<br/>from this centre"] --> H["Send to that doctor<br/>(saved in offline queue)"]
     H --> I{"Online?"}
     I -- No --> I1["Wait in queue"] --> I
     I -- Yes --> J["Sync to server<br/>verify checksums · block duplicates"]
     J --> K{"Server quality gate<br/>agrees?"}
     K -- "No" --> R
     K -- Yes --> L["AI: calibrated grade,<br/>uncertainty, Grad-CAM++"]
-    L --> M["Doctor reviews image,<br/>heatmap and probabilities"]
+    L --> M["The chosen doctor reviews image,<br/>heatmap and probabilities"]
     M --> N["Doctor records decision<br/>(AI result stays unchanged)"]
     N --> O["Doctor releases report"]
     O --> P(["Patient reads plain-language report<br/>with heatmap"])
@@ -227,7 +232,7 @@ stateDiagram-v2
 
 ### Prerequisites
 - **Python 3.11+**, **Node.js 20+**, **Docker Desktop**
-- The trained model files in `backend/model/`: `dr.onnx`, `best.pt`, `calib.json` 
+- The trained model files in `backend/model/`: `dr.onnx`, `best.pt`, `calib.json` (not stored in git, see [Development workflow](#-development-workflow))
 
 ### 1. Start the database and image storage
 ```bash
@@ -239,8 +244,7 @@ This starts PostgreSQL (host port **5433**) and RustFS storage (**9000** API, **
 ### 2. Start the API
 ```bash
 cd backend
-pip install fastapi "uvicorn[standard]" sqlalchemy "psycopg[binary]" minio python-multipart pyjwt \
-            onnxruntime opencv-python-headless numpy pillow timm torch grad-cam
+pip install -r requirements.txt
 python -m uvicorn main:app --reload
 ```
 Interactive API docs: **http://127.0.0.1:8000/docs**
@@ -254,28 +258,115 @@ npm run dev
 ```
 Open **http://localhost:3000**.
 
-<details>
-<summary><b>🔑 Demo accounts (click to expand)</b></summary>
+<details open>
+<summary><b>🔑 First sign-in: there are no default passwords</b></summary>
 
-| Role | Username | Password |
+On the **first start with an empty database**, the API terminal prints a table of demo accounts, each with a **random temporary password shown only once**. Copy it from the terminal. Everyone is forced to choose their own password at first sign-in.
+
+| Account | Role | Centre |
 |---|---|---|
-| Nurse | `nurse1` | `nurse123` |
-| Doctor | `doctor1` | `doctor123` |
-| Patient | `P001` | `patient123` |
+| `admin1` | Centre administrator | PHC-001 Kolar Rural PHC |
+| `nurse1`, `nurse2`, `doctor1` | Nurses and doctor | PHC-001 |
+| `P001`, `P002`, `P003` | Patients | PHC-001 |
+| `admin2` | Centre administrator | PHC-002 Mulbagal PHC |
+| `nurse3`, `doctor2` | Nurse and doctor | PHC-002 |
+| `P004`, `P005`, `P006` | Patients | PHC-002 |
 
-Patient OTP login: mobile `9876500001`, code `123456`. Seeded patients `P001`–`P006` have mobiles `9876500001`–`9876500006`.
-These are **demo credentials**. Change them, and set `JWT_SECRET`, before any real use.
+Missed the table? Issue a new temporary password from the `backend` folder:
+```bash
+python manage.py reset-password nurse1
+python manage.py reset-patient P001
+```
+Details are in [Accounts, centres and passwords](#-accounts-centres-and-passwords).
 </details>
 
 > 🐳 **One-command Docker setup** for the whole stack (database, storage, API and web app) is being added. Until then, use the steps above.
 
-### 🧪 Try the whole journey in 5 minutes
+### 🧪 Try the whole journey in 10 minutes
 
-- [ ] **Nurse** (`nurse1`): *Patient Verification* → pick `P003` → *Start screening* → capture both eyes (use images from `data/proc512`) → accept → *Send to doctor* → *Offline Queue & Sync* → **Sync all now**
-- [ ] **Doctor** (`doctor1`): open *Screening Review*, see the image with the **real Grad-CAM++ heatmap** → *Decision* → change a grade without a reason (the server refuses) → add a reason → save → *Reports* → **Release to patient**
-- [ ] **Patient** (`P003` / `patient123`): *My Report* shows the plain-language result and heatmap
+- [ ] **Admin** (`admin1`): sign in with the temporary password, choose your own → *Staff Accounts* → add a nurse and note the one-time password
+- [ ] **Nurse** (`nurse1`): *Patient Registration* → register a patient and note the **patient ID and temporary password** → *Patient Verification* → *Start screening* → capture both eyes (use images from `data/proc512`) → accept → *Screening Results* → **Send to doctor**, choosing a doctor → *Offline Queue & Sync* → **Sync all now**
+- [ ] **Doctor** (the one you chose): open *Screening Review*, see the image with the **real Grad-CAM++ heatmap** → *Decision* → change a grade without a reason (the server refuses) → add a reason → save → *Reports* → **Release to patient**
+- [ ] **Patient** (the new patient ID): sign in with the temporary password, set your own, open *My Report* for the plain-language result and heatmap
+- [ ] **Isolation check**: sign in as `nurse3` (the other centre). The patient list does not contain PHC-001's patients, and `doctor2` never sees the case
 - [ ] **Doctor** → *Audit Trail* shows a green **Chain verified** banner
-- [ ] **Offline test**: set the browser's network to *Offline*, screen another patient, then go back online and watch the queue upload by itself
+- [ ] **Offline test**: set the browser's network to *Offline*, screen another patient (the doctor list is remembered), then go back online and watch the queue upload by itself
+
+---
+
+## 🔐 Accounts, centres and passwords
+
+Every nurse, doctor, administrator and patient belongs to **one health centre**. Staff can only see patients, screenings and appointments of their own centre, and this is checked **on the server**. Nobody chooses their own first password: the system issues a **random temporary password, shown once**, and the person must replace it at first sign-in.
+
+```mermaid
+flowchart TD
+    CLI["Server owner<br/>manage.py add-staff ... admin"] --> AD["Centre administrator"]
+    AD -- "Staff Accounts page" --> ST["Nurse or doctor account<br/>random temporary password, shown once"]
+    NU["Nurse registers a patient"] --> PA["Patient account<br/>username = patient ID<br/>random temporary password, shown once"]
+    ST --> FL["First sign-in"]
+    PA --> FL
+    FL --> CH["Forced: choose your own password"]
+    CH --> USE["Normal use"]
+    USE -- "forgot password" --> RS["Staff: reset by the administrator<br/>Patient: reset by a nurse<br/>new temporary password"]
+    RS --> FL
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant W as Web app
+    participant A as API
+
+    U->>W: ID and password (one login page for everyone)
+    W->>A: POST /auth/login
+    alt 5 wrong attempts in a row
+        A-->>W: 423, locked for 10 minutes
+    else correct
+        A-->>W: token, role, centre, must_change
+    end
+    opt must_change is true (temporary password)
+        W->>U: Change-password page, nothing else opens
+        U->>W: temporary password and a new one
+        W->>A: POST /auth/change-password
+        A->>A: check the password rules, store the new hash,<br/>invalidate every older token
+        A-->>W: new token
+    end
+    W->>U: the portal for your role
+```
+
+**Who creates and resets what**
+
+| Who | Can do |
+|---|---|
+| Server owner (`manage.py`) | Create centres, the first administrator, reset any password |
+| Centre administrator (web) | Create nurses and doctors of their centre, reset their passwords, disable or re-enable them |
+| Nurse (web) | Register patients (gets the patient's temporary password), reset a patient's password |
+| Doctor, patient | Change their own password |
+
+```bash
+# from the backend folder, database running
+python manage.py add-centre PHC-003 "Bangarpet PHC" --district Kolar
+python manage.py add-staff admin3 admin "Centre Admin" --centre PHC-003
+python manage.py add-staff nurse.divya nurse "Nurse Divya" --centre PHC-001
+python manage.py reset-password nurse.divya
+python manage.py reset-patient P001
+python manage.py deactivate nurse.divya
+python manage.py list
+```
+
+**Password rules** (checked on the server; the page shows them live)
+
+| Rule | Detail |
+|---|---|
+| Length and mix | At least 10 characters, with letters and numbers |
+| Not guessable | Must not contain your ID or username, common words (such as *password* or *welcome*) or repeated characters |
+| Fresh | Must differ from the old password |
+| Lockout | 5 wrong attempts lock the account for 10 minutes |
+| Sessions | Changing or resetting a password ends all older sessions; disabling an account does too |
+| Storage | Salted PBKDF2-SHA256 hashes, never the password itself |
+
+**Sending a case to a doctor.** After every selected eye is accepted, the nurse picks a doctor from the list of active doctors **in her centre**. Only that doctor sees the case. The nurse can change the doctor until the review is recorded. The doctor list is remembered on the device, so choosing works offline too.
 
 ---
 
@@ -300,23 +391,30 @@ flowchart LR
         p2["Plain-language report + heatmap"]
         p3["Appointments, notifications, help"]
     end
-    NURSE -- "sends case" --> DOCTOR
+    subgraph ADMIN["🛠️ Centre administrator"]
+        a1["Create nurse and doctor accounts"]
+        a2["Issue temporary passwords, disable accounts"]
+    end
+    ADMIN -. "creates accounts" .-> NURSE
+    ADMIN -. "creates accounts" .-> DOCTOR
+    NURSE -- "sends case to the chosen doctor" --> DOCTOR
     DOCTOR -- "releases report" --> PATIENT
 ```
 
 <details>
 <summary><b>Who can see what (click to expand)</b></summary>
 
-| Information | Nurse | Doctor | Patient |
-|---|:-:|:-:|:-:|
-| Patient list and details | ✅ | ✅ | own only |
-| Quality results and recapture guidance | ✅ | ✅ | ❌ |
-| **AI probabilities, grade, uncertainty** | ❌ | ✅ | ❌ |
-| Grad-CAM++ heatmap | ❌ | ✅ | ✅ *(after release)* |
-| Doctor decision and notes | ❌ | ✅ | ✅ *(after release)* |
-| Audit trail and analytics | ❌ | ✅ | ❌ |
+| Information | Nurse | Doctor | Patient | Admin |
+|---|:-:|:-:|:-:|:-:|
+| Patients of **their own centre** | ✅ | ✅ | own only | ❌ |
+| Quality results and recapture guidance | ✅ | ✅ | ❌ | ❌ |
+| **AI probabilities, grade, uncertainty** | ❌ | ✅ *(cases assigned to them)* | ❌ | ❌ |
+| Grad-CAM++ heatmap | ❌ | ✅ | ✅ *(after release)* | ❌ |
+| Doctor decision and notes | ❌ | ✅ | ✅ *(after release)* | ❌ |
+| Audit trail and analytics | ❌ | ✅ *(own centre)* | ❌ | ❌ |
+| Staff accounts | ❌ | ❌ | ❌ | ✅ *(own centre)* |
 
-Roles are enforced **on the server** with JWT tokens, not just hidden in the interface.
+Roles and centres are enforced **on the server** with JWT tokens, not just hidden in the interface. A request for another centre's record returns *not found*, so its existence is not revealed.
 </details>
 
 ---
@@ -335,6 +433,9 @@ Roles are enforced **on the server** with JWT tokens, not just hidden in the int
 | Duplicate uploads prevented | `client_id` per screening | Unique `client_id`; unchanged checksums are skipped |
 | Image lineage is auditable | SHA-256 per image | Checksums in audit entries; **hash-chained** log detects tampering |
 | Patients see only reviewed results | Report page | Patient endpoints return only released, doctor-reviewed data; **no probabilities** |
+| Staff see only their own centre | Lists and pages show one centre | Every query is filtered by the caller's centre; other centres' records return `404` |
+| Only the chosen doctor reviews a case | Doctor queue shows assigned cases | Review and release return `403` for any other doctor |
+| No shared or weak passwords | Live rules on the change-password page | Temporary passwords are random and single-use, rules enforced, 5-attempt lockout, old tokens invalidated |
 
 ---
 
@@ -425,11 +526,98 @@ The gate protects the model: on low-light and over-exposed images, accuracy on t
 
 Rule fixed in advance: accept a level if QWK falls by at most 0.05 and AUROC by at most 0.02 from the clean baseline. Quality **80** is the lowest that passes, so files below it are rejected. Differences of about ±0.02 between neighbouring levels are sampling noise (1,200 images).
 
+![JPEG curve](docs/figures/jpeg_curve.png)
 
+### Explainability
+![Grad-CAM++ example](docs/figures/gradcam.png)
 
 ---
 
+## 🗃️ Data model
 
+```mermaid
+erDiagram
+    PATIENTS ||--o{ SCREENINGS : "has"
+    PATIENTS ||--o{ APPOINTMENTS : "requests"
+    PATIENTS ||--o| USERS : "can log in as"
+    CENTRES ||--o{ USERS : "employs or serves"
+    CENTRES ||--o{ PATIENTS : "registers"
+    SCREENINGS ||--|{ EYE_RECORDS : "one per eye"
+    SCREENINGS ||--o{ REVIEWS : "append-only"
+
+    PATIENTS {
+        string id PK "P001, P101 ..."
+        string name
+        string dob
+        string gender
+        string mobile
+        bool verified
+        bool consent
+        string centre_id FK
+    }
+    CENTRES {
+        string id PK "PHC-001"
+        string name
+        string district
+        bool active
+    }
+    USERS {
+        string username PK
+        string password_hash "salted PBKDF2"
+        string role "admin, nurse, doctor, patient"
+        string centre_id FK
+        bool active
+        bool must_change "temporary password"
+        int failed_attempts
+        datetime locked_until
+    }
+    SCREENINGS {
+        string id PK "SCR-1001 ..."
+        string client_id UK "blocks duplicate uploads"
+        string status
+        datetime synced_at
+        datetime sent_to_doctor
+        string ai_state
+        string doctor_review
+        string assigned_to "doctor chosen by the nurse"
+        datetime report_released
+    }
+    EYE_RECORDS {
+        int id PK
+        string eye "right or left"
+        string state
+        string original_sha256
+        string processing_sha256
+        json quality "server gate result"
+        json ai "original AI prediction, never edited"
+        string heatmap_key
+    }
+    REVIEWS {
+        int id PK
+        string by
+        string decision
+        json final_grades
+        bool overrides
+        string notes
+    }
+    APPOINTMENTS {
+        string id PK
+        string date
+        string reason
+        string status "requested, confirmed, cancelled"
+    }
+    AUDIT_LOG {
+        int id PK
+        string action
+        json detail
+        string prev_hash
+        string hash "SHA-256 chain"
+    }
+```
+
+The **audit log** is separate and hash-chained: each row stores the hash of the previous one, so editing or deleting any row breaks the chain, which the Audit page reports.
+
+---
 
 ## 🔌 API reference
 
@@ -440,15 +628,18 @@ Interactive docs (try it from the browser): **http://127.0.0.1:8000/docs**. Clic
 
 | Area | Endpoint | Who |
 |---|---|---|
-| Auth | `POST /auth/login` · `POST /auth/otp-login` · `POST /auth/register` · `GET /me` | public / any |
-| Patients | `GET /patients` · `POST /patients` (duplicate check) · `GET /patients/{id}` · `POST /patients/{id}/verify` | nurse, doctor |
+| Auth | `POST /auth/login` · `POST /auth/change-password` · `GET /me` | public / any signed-in user |
+| Patients | `GET /patients` · `GET /patients/{id}` | nurse, doctor (own centre) |
+| Registration | `POST /patients` (duplicate check, returns the temporary password once) · `POST /patients/{id}/verify` · `POST /patients/{id}/reset-password` · `GET /doctors` | nurse |
+| Admin | `GET /admin/staff` · `POST /admin/staff` · `POST /admin/staff/{username}/reset-password` · `POST /admin/staff/{username}/active` | admin |
 | Appointments | `POST /appointments` · `GET /appointments` · `POST /appointments/{id}/cancel` · `POST /appointments/{id}/confirm` | patient / staff |
 | Sync | `POST /sync/screenings` (multipart: JSON + images) | nurse |
 | Screenings | `GET /screenings` · `GET /screenings/{id}` · `GET /patients/{id}/screenings` | role-aware |
+| Assignment | `POST /screenings/{id}/assign` (change doctor until reviewed) | nurse |
 | Doctor | `POST /screenings/{id}/reviews` · `POST /screenings/{id}/release` · `GET /analytics` | doctor |
 | Audit | `GET /audit` · `GET /audit/verify` | doctor |
 
-Responses are **role-aware**: the same screening returns different fields to a nurse, a doctor and a patient.
+Every staff endpoint is limited to the caller's own centre. Responses are **role-aware**: the same screening returns different fields to a nurse, a doctor and a patient.
 </details>
 
 ---
@@ -478,7 +669,9 @@ cd frontend && npm run dev                # web app reloads when you save a file
 | The model or calibration | Replace the files in `backend/model/`, restart the API |
 | JPEG threshold | Change **both** `backend/jpegq.py` (`MIN_QUALITY`) and `src/lib/jpegq.ts` (`MIN_JPEG_QUALITY`) |
 | Quality-gate thresholds | Change both `backend/iqa.py` and `frontend/src/lib/iqa.ts` so device and server agree |
-| Secrets | Set `JWT_SECRET` and change demo passwords; never commit `.env` files |
+| Secrets | Set a strong `JWT_SECRET`; never commit `.env` files. Demo accounts use random temporary passwords, so there are none to change |
+| Password rules | Change both `policy_error` in `backend/auth.py` and the rules list in `frontend/src/app/change-password/page.tsx` |
+| New table columns on users, patients or screenings | Add an `ALTER TABLE ... IF NOT EXISTS` line to `MIGRATIONS` in `main.py` |
 </details>
 
 **Model files are large and are not committed.** Keep `outputs/*.pt` and `*.onnx` out of git (use Git LFS or a release asset), and commit only the small figures in `docs/figures/`.
@@ -491,6 +684,8 @@ cd frontend && npm run dev                # web app reloads when you save a file
 
 ```
 dr-triage/
+├─ requirements.txt        backend dependencies
+├─ requirements-ml.txt     extra packages for training scripts
 ├─ src/                    ML pipeline (prep, train, calibrate, gradcam, robust, external, jpeg_curve, ...)
 ├─ data/                   datasets and splits            (not in git)
 ├─ outputs/                trained model + result tables   (large files not in git)
@@ -499,7 +694,8 @@ dr-triage/
 │  ├─ main.py              app, seed data, startup
 │  ├─ models.py            database tables
 │  ├─ auth.py              password hashing, JWT, role checks
-│  ├─ routes_auth.py · routes_people.py · routes_screenings.py
+│  ├─ routes_auth.py · routes_people.py · routes_admin.py · routes_screenings.py
+│  ├─ manage.py            admin CLI: centres, staff, password resets
 │  ├─ pipeline.py          preprocessing, ONNX inference, Grad-CAM++
 │  ├─ iqa.py · jpegq.py    server-side quality gate
 │  ├─ audit.py · storage.py
@@ -507,7 +703,7 @@ dr-triage/
 │  └─ docker-compose.yml   PostgreSQL + RustFS
 └─ frontend/
    └─ src/
-      ├─ app/{nurse,doctor,patient}/   the three portals
+      ├─ app/{nurse,doctor,patient,admin}/   the four portals, plus login and change-password
       ├─ components/                   shared UI (sidebar, viewer, ...)
       └─ lib/                          db.ts (offline store + sync), api.ts, auth.ts, iqa.ts, jpegq.ts
 ```
@@ -521,17 +717,73 @@ dr-triage/
 - The model tends to **over-grade** on APTOS (safe for triage, but increases referrals).
 - **Compression check** cannot judge lossless files that were earlier saved as low-quality JPEG, or JPEGs with non-standard tables. The threshold came from re-compressing 512 px images, so it is conservative.
 - **Patient registration needs a connection.** Screening of already-registered patients works offline.
-- **Demo OTP and passwords.** The OTP is a fixed demo code; a real deployment needs SMS and account lockout.
+- **No email or SMS.** Forgotten passwords are reset by a person (administrator for staff, nurse for patients), and temporary passwords appear on screen, so hand them over privately. The first administrator is created from the command line. There is no two-factor sign-in.
 - A doctor logging into a device that still holds a nurse's not-yet-uploaded records would see them until they sync.
 
 ---
 
+## ❓ Troubleshooting & FAQ
 
+<details>
+<summary><b>The API cannot connect to the database ("role dr does not exist")</b></summary>
+
+A native PostgreSQL on Windows may already be using port 5432. This project's database is mapped to **5433** on purpose; check that `DB_URL` in `backend/settings.py` uses `127.0.0.1:5433`.
+</details>
+
+<details>
+<summary><b>I changed a database model and the API fails with "column does not exist"</b></summary>
+
+`create_all` does not alter existing tables. Add an `ALTER TABLE … ADD COLUMN IF NOT EXISTS` at startup, or wipe the dev database: `docker compose down -v` then `docker compose up -d`.
+</details>
+
+<details>
+<summary><b>The web app says "Cannot reach the server"</b></summary>
+
+Check that uvicorn is running, that `frontend/.env.local` has `NEXT_PUBLIC_API_URL`, and that you restarted `npm run dev` after creating it.
+</details>
+
+<details>
+<summary><b>The doctor sees "AI results are not available yet"</b></summary>
+
+AI runs on the server when the nurse's record **syncs after Send to doctor**. Open *Offline Queue & Sync* on the nurse side and sync.
+</details>
+
+<details>
+<summary><b>A good photo was rejected for compression</b></summary>
+
+The file's JPEG quality is below 80, often because it was forwarded through a chat app. Capture again, or export the original file from the camera.
+</details>
+
+<details>
+<summary><b>Why is a patient graded "No DR" but flagged Referable?</b></summary>
+
+Referral uses the summed probability of moderate-or-worse (threshold 0.09), not just the top grade. This is intentional, to keep sensitivity high.
+</details>
+
+<details>
+<summary><b>I don't know the first password</b></summary>
+
+There are no default passwords. On a fresh database the API terminal prints a table of temporary passwords once. Otherwise run `python manage.py reset-password <username>` (or `reset-patient P001`) in the `backend` folder. New staff get theirs from the administrator, new patients from the nurse.
+</details>
+
+<details>
+<summary><b>"Too many wrong attempts"</b></summary>
+
+The account is locked for 10 minutes after 5 wrong passwords. Wait, or have it reset by the administrator (staff) or a nurse (patients), which also unlocks it.
+</details>
+
+<details>
+<summary><b>A doctor does not see a case</b></summary>
+
+Each case goes only to the doctor the nurse chose. The nurse can change the doctor from *Screening Results* until the review is recorded. Cases sent before this feature existed are visible to every doctor of the centre.
+</details>
+
+---
 
 <div align="center">
 
 **BIS586 Mini Project · Group 10** · Guide: Prof. Krupesha · RV Institute of Technology and Management
 
-*Team: Aditya S , Varsha Madyalkar , Jagan Sai K , M Jaiswaroop
+*Team: add member names here*
 
 </div>

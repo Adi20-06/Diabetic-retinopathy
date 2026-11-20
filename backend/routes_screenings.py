@@ -2,6 +2,7 @@ import json, hashlib, datetime as dt
 from collections import Counter
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 import models as M, storage, audit, auth, pipeline
 from iqa import assess
@@ -23,6 +24,7 @@ class SyncIn(BaseModel):
     client_id: str; patient_id: str; created_at: str
     send_to_doctor: bool = False
     eyes: dict[str, EyeIn]
+    doctor: str | None = None
 class ReviewIn(BaseModel):
     decision: str; final_grades: dict[str, int]
     notes: str = ""; follow_up: str = "Within 1 month"
@@ -77,6 +79,9 @@ def staff_view(db, s, role, full=True):
              synced_at=iso(s.synced_at), sent_to_doctor=iso(s.sent_to_doctor), ai_state=s.ai_state,
              doctor_review=s.doctor_review, report_released=iso(s.report_released),
              eyes={r.eye: eye_json(r, role, full) for r in recs})
+    d["assigned_to"] = s.assigned_to
+    a = db.get(M.User, s.assigned_to) if s.assigned_to else None
+    d["assigned_name"] = a.name if a else None
     if role == "doctor":
         d["priority"] = priority(recs)
         d["reviews"] = [review_json(v) for v in reviews_of(db, s.id)]
@@ -97,6 +102,11 @@ def patient_view(db, s):
 def view_for(db, s, u, full=True):
     return patient_view(db, s) if u.role == "patient" else staff_view(db, s, u.role, full)
 
+def pick_doctor(db, u, username):
+    d = db.get(M.User, username) if username else None
+    if not d or d.role != "doctor" or d.centre_id != u.centre_id or d.active is False: return None
+    return d
+
 # ---------- sync ----------
 @router.post("/sync/screenings")
 def sync(payload: str = Form(...),
@@ -107,7 +117,7 @@ def sync(payload: str = Form(...),
     except Exception as e: raise HTTPException(422, f"Bad payload: {e}")
     if not p.eyes or any(k not in EYES for k in p.eyes): raise HTTPException(422, "eyes must be right and/or left")
     patient = db.get(M.Patient, p.patient_id)
-    if not patient: raise HTTPException(404, "Patient not found")
+    if not patient or patient.centre_id != u.centre_id: raise HTTPException(404, "Patient not found")
     if not patient.verified: raise HTTPException(409, "Patient identity is not verified")
     files = {"right": (right_original, right_processing), "left": (left_original, left_processing)}
 
@@ -165,13 +175,16 @@ def sync(payload: str = Form(...),
 
     send_rejected = None
     if p.send_to_doctor and not s.sent_to_doctor:
-        if s.status == "completed":
-            s.sent_to_doctor, s.doctor_review, s.ai_state = M.now(), "pending", "queued"
+        doc = pick_doctor(db, u, p.doctor)
+        if not doc:
+            send_rejected = "Choose a doctor from your health centre"
+        elif s.status == "completed":
+            s.sent_to_doctor, s.doctor_review, s.ai_state, s.assigned_to = M.now(), "pending", "queued", doc.username
             run_ai(db, s)
         else:
             send_rejected = "Every screened eye needs an accepted, gradable image first"
     audit.log(db, "screening_synced", s.id, dict(by=u.username, created=created, new_images=changed, duplicate_images=dup,
-              sha256={r.eye: r.original_sha256 for r in recs}, sent_to_doctor=bool(s.sent_to_doctor)))
+              sha256={r.eye: r.original_sha256 for r in recs}, assigned_to=s.assigned_to , sent_to_doctor=bool(s.sent_to_doctor)))
     db.commit()
     out = staff_view(db, s, u.role)
     out.update(created=created, duplicate_eyes=dup, updated_eyes=changed, send_rejected=send_rejected)
@@ -180,8 +193,10 @@ def sync(payload: str = Form(...),
 # ---------- reading ----------
 @router.get("/screenings")
 def list_screenings(full: bool = False, db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor"))):
-    qs = db.query(M.Screening)
-    qs = qs.filter(M.Screening.operator == u.username) if u.role == "nurse" else qs.filter(M.Screening.sent_to_doctor.isnot(None))
+    qs = (db.query(M.Screening).join(M.Patient, M.Patient.id == M.Screening.patient_id)
+            .filter(M.Patient.centre_id == u.centre_id))
+    if u.role == "nurse": qs = qs.filter(M.Screening.operator == u.username)
+    else: qs = qs.filter(M.Screening.sent_to_doctor.isnot(None), or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
     return [staff_view(db, s, u.role, full=full) for s in qs.order_by(M.Screening.created_at.desc()).limit(300)]
 
 @router.get("/screenings/{sid}")
@@ -189,12 +204,15 @@ def get_screening(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.curr
     s = db.get(M.Screening, sid)
     if not s: raise HTTPException(404, "Screening not found")
     if u.role == "patient" and (s.patient_id != u.patient_id or not s.report_released):
+        if u.role != "patient": auth.ensure_centre(db, u, s.patient_id)
+        if u.role == "doctor" and s.assigned_to not in (None, u.username): raise HTTPException(404, "Screening not found")
         raise HTTPException(403, "This report is not available to you")
     return view_for(db, s, u)
 
 @router.get("/patients/{pid}/screenings")
 def patient_screenings(pid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
     if u.role == "patient" and u.patient_id != pid: raise HTTPException(403, "Not your record")
+    if u.role != "patient": auth.ensure_centre(db, u, pid)
     qs = db.query(M.Screening).filter_by(patient_id=pid).order_by(M.Screening.created_at.desc())
     return [view_for(db, s, u, full=False) for s in qs]
 
@@ -203,6 +221,8 @@ def patient_screenings(pid: str, db: Session = Depends(M.get_db), u=Depends(auth
 def add_review(sid: str, b: ReviewIn, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
     s = db.get(M.Screening, sid)
     if not s or not s.sent_to_doctor: raise HTTPException(404, "Screening not found")
+    auth.ensure_centre(db, u, s.patient_id)
+    if s.assigned_to not in (None, u.username): raise HTTPException(403, "This case is assigned to another doctor")
     if s.ai_state != "done": raise HTTPException(409, "AI results are not ready yet")
     if b.decision not in DECISIONS: raise HTTPException(422, "Unknown decision")
     recs = {r.eye: r for r in eyes_of(db, sid)}
@@ -221,6 +241,8 @@ def add_review(sid: str, b: ReviewIn, db: Session = Depends(M.get_db), u=Depends
 def release(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
     s = db.get(M.Screening, sid)
     if not s or s.doctor_review != "reviewed": raise HTTPException(409, "Record a decision before releasing the report")
+    auth.ensure_centre(db, u, s.patient_id)
+    if s.assigned_to not in (None, u.username): raise HTTPException(403, "This case is assigned to another doctor")
     s.report_released = M.now()
     audit.log(db, "report_released", sid, dict(by=u.username)); db.commit()
     return staff_view(db, s, u.role)
@@ -228,7 +250,10 @@ def release(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("d
 # ---------- analytics and audit ----------
 @router.get("/analytics")
 def analytics(db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
-    ss, recs = db.query(M.Screening).all(), db.query(M.EyeRecord).all()
+    ss = (db.query(M.Screening).join(M.Patient, M.Patient.id == M.Screening.patient_id)
+            .filter(M.Patient.centre_id == u.centre_id).all())
+    ids = {s.id for s in ss}
+    recs = [r for r in db.query(M.EyeRecord).all() if r.screening_id in ids]
     by = {}
     for r in recs: by.setdefault(r.screening_id, []).append(r)
     pri = Counter(priority(by.get(s.id, [])) for s in ss if s.ai_state == "done")
@@ -256,5 +281,28 @@ def analytics(db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))
 
 @router.get("/audit")
 def audit_list(limit: int = 300, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
-    rows = db.query(M.Audit).order_by(M.Audit.id.desc()).limit(min(limit, 1000)).all()
-    return [dict(id=r.id, ts=r.ts, action=r.action, screening_id=r.screening_id, detail=r.detail, hash=r.hash) for r in rows]
+    staff = {x for (x,) in db.query(M.User.username).filter(M.User.centre_id == u.centre_id)}
+    pats = {x for (x,) in db.query(M.Patient.id).filter(M.Patient.centre_id == u.centre_id)}
+    scr = {x for (x,) in db.query(M.Screening.id).join(M.Patient, M.Patient.id == M.Screening.patient_id)
+                         .filter(M.Patient.centre_id == u.centre_id)}
+    def mine(r):
+        d = r.detail or {}
+        return r.screening_id in scr or d.get("by") in staff or d.get("username") in staff or d.get("patient_id") in pats
+    rows = db.query(M.Audit).order_by(M.Audit.id.desc()).limit(2000).all()
+    return [dict(id=r.id, ts=r.ts, action=r.action, screening_id=r.screening_id, detail=r.detail, hash=r.hash)
+            for r in rows if mine(r)][:min(limit, 1000)]
+
+class AssignIn(BaseModel): doctor: str
+
+@router.post("/screenings/{sid}/assign")
+def assign(sid: str, b: AssignIn, db: Session = Depends(M.get_db), u=Depends(auth.require("nurse"))):
+    s = db.get(M.Screening, sid)
+    if not s: raise HTTPException(404, "Screening not found")
+    auth.ensure_centre(db, u, s.patient_id)
+    if not s.sent_to_doctor: raise HTTPException(409, "Send the case to a doctor first")
+    if s.doctor_review == "reviewed": raise HTTPException(409, "The doctor has already reviewed this case")
+    doc = pick_doctor(db, u, b.doctor)
+    if not doc: raise HTTPException(422, "Choose a doctor from your health centre")
+    s.assigned_to = doc.username
+    audit.log(db, "doctor_assigned", sid, dict(by=u.username, doctor=doc.username)); db.commit()
+    return staff_view(db, s, u.role)

@@ -7,6 +7,7 @@ import { Badge, Button, Card, PageHeader, buttonStyles, inputClass } from "@/com
 import StatusBadge from "@/components/StatusBadge";
 import { ageFrom, createScreening, findDuplicates, formatDateTime, markVerified, searchPatients, useDb, type Screening } from "@/lib/db";
 import { useSession } from "@/lib/auth";
+import { ResetPasswordButton } from "@/components/TempPasswordCard";
 
 export default function VerifyClient() {
   const db = useDb();
@@ -89,6 +90,14 @@ export default function VerifyClient() {
                   </div>
                 ))}
               </dl>
+
+              <div className="mt-6 rounded-xl bg-page p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-strong">Patient login</h3>
+                <p className="mt-1 text-sm text-muted-strong">
+                  The patient signs in with their ID ({patient.id}). If they forgot the password, or never received one, issue a new temporary password.
+                </p>
+                <div className="mt-3"><ResetPasswordButton patientId={patient.id} name={patient.name} /></div>
+              </div>
 
               {dups.length > 0 && (
                 <div role="alert" className="mt-5 flex gap-3 rounded-xl bg-gold-light p-4 text-sm text-deep">

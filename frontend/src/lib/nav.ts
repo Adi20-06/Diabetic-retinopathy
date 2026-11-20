@@ -1,15 +1,16 @@
 import {
   LayoutDashboard, UserPlus, UserCheck, ClipboardList, Camera, ShieldCheck, RefreshCw,
   ClipboardCheck, CloudUpload, History, Users, Eye, Stethoscope, FileText, Activity,
-  ScrollText, User, CalendarDays, Bell, LifeBuoy, type LucideIcon,
+  ScrollText, User, CalendarDays, Bell, LifeBuoy, KeyRound, type LucideIcon,
 } from "lucide-react";
 
-export type Role = "nurse" | "doctor" | "patient";
+export type Role = "nurse" | "doctor" | "patient" | "admin";
 
 export const ROLE_LABEL: Record<Role, string> = {
   nurse: "Nurse / Screening Operator",
   doctor: "Doctor",
   patient: "Patient",
+  admin: "Centre Administrator",
 };
 
 export type NavItem = { label: string; href: string; icon: LucideIcon };
@@ -27,6 +28,7 @@ export const NAV: Record<Role, NavItem[]> = {
     { label: "Offline Queue & Sync", href: "/nurse/sync", icon: CloudUpload },
     { label: "Screening History", href: "/nurse/history", icon: History },
     { label: "Appointments", href: "/nurse/appointments", icon: CalendarDays },
+    { label: "Change Password", href: "/change-password", icon: KeyRound },
   ],
   doctor: [
     { label: "Dashboard", href: "/doctor/dashboard", icon: LayoutDashboard },
@@ -38,6 +40,7 @@ export const NAV: Record<Role, NavItem[]> = {
     { label: "Analytics & Reports", href: "/doctor/analytics", icon: Activity },
     { label: "Audit Trail", href: "/doctor/audit", icon: ScrollText },
     { label: "Appointments", href: "/doctor/appointments", icon: CalendarDays },
+    { label: "Change Password", href: "/change-password", icon: KeyRound },
   ],
   patient: [
     { label: "Dashboard", href: "/patient/dashboard", icon: LayoutDashboard },
@@ -47,5 +50,10 @@ export const NAV: Record<Role, NavItem[]> = {
     { label: "Appointments", href: "/patient/appointments", icon: CalendarDays },
     { label: "Notifications", href: "/patient/notifications", icon: Bell },
     { label: "Help & Support", href: "/patient/help", icon: LifeBuoy },
+    { label: "Change Password", href: "/change-password", icon: KeyRound },
+  ],
+  admin: [
+    { label: "Staff Accounts", href: "/admin/staff", icon: Users },
+    { label: "Change Password", href: "/change-password", icon: KeyRound },
   ],
 };
