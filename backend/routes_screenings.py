@@ -228,10 +228,13 @@ def list_screenings(full: bool = False, db: Session = Depends(M.get_db), u=Depen
 def get_screening(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
     s = db.get(M.Screening, sid)
     if not s: raise HTTPException(404, "Screening not found")
-    if u.role == "patient" and (s.patient_id != u.patient_id or not s.report_released):
-        if u.role != "patient": auth.ensure_centre(db, u, s.patient_id)
-        if u.role == "doctor" and s.assigned_to not in (None, u.username): raise HTTPException(404, "Screening not found")
-        raise HTTPException(403, "This report is not available to you")
+    if u.role == "patient":
+        if s.patient_id != u.patient_id or not s.report_released:
+            raise HTTPException(403, "This report is not available to you")
+    else:
+        auth.ensure_centre(db, u, s.patient_id)                                    # staff: own centre only
+        if u.role == "doctor" and s.assigned_to not in (None, u.username):         # doctors: only cases sent to them
+            raise HTTPException(404, "Screening not found")
     return view_for(db, s, u)
 
 @router.get("/patients/{pid}/screenings")
@@ -267,9 +270,10 @@ def add_review(sid: str, b: ReviewIn, db: Session = Depends(M.get_db), u=Depends
 @router.post("/screenings/{sid}/release")
 def release(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
     s = db.get(M.Screening, sid)
-    if not s or s.doctor_review != "reviewed": raise HTTPException(409, "Record a decision before releasing the report")
+    if not s: raise HTTPException(404, "Screening not found")
     auth.ensure_centre(db, u, s.patient_id)
     if s.assigned_to not in (None, u.username): raise HTTPException(403, "This case is assigned to another doctor")
+    if s.doctor_review != "reviewed": raise HTTPException(409, "Record a decision before releasing the report")
     s.report_released = M.now()
     audit.log(db, "report_released", sid, dict(by=u.username)); db.commit()
     return staff_view(db, s, u.role)

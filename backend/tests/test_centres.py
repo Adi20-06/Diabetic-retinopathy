@@ -41,3 +41,11 @@ def test_appointments_stay_inside_the_centre(client, H):
     assert aid not in [x["id"] for x in client.get("/appointments", headers=H["nurse3"]).json()]
     assert client.post(f"/appointments/{aid}/confirm", headers=H["nurse3"]).status_code == 404
     assert client.post(f"/appointments/{aid}/confirm", headers=H["nurse1"]).status_code == 200
+
+def test_other_centre_doctor_cannot_review_or_release(client, H):
+    p = new_patient(client, H["nurse1"])
+    payload, files = build(p["id"], send=True, doctor="doctor1")
+    sid = post_sync(client, H["nurse1"], payload, files).json()["id"]
+    body = dict(decision="follow_up", final_grades={"right": 2, "left": 2}, notes="x")
+    assert client.post(f"/screenings/{sid}/reviews", json=body, headers=H["doctor2"]).status_code == 404
+    assert client.post(f"/screenings/{sid}/release", headers=H["doctor2"]).status_code == 404
