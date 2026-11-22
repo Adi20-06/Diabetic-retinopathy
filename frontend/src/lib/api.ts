@@ -22,9 +22,10 @@ export async function api<T>(path: string, opts: { method?: string; json?: unkno
   } catch {
     throw new ApiError(0, null, "Cannot reach the server. Check your connection.");
   }
-  if (res.status === 401 && t) {           // token expired or invalid
+  if (res.status === 401 && t && !path.startsWith("/auth/login")) {   // expired or invalid session
     try { localStorage.removeItem("dr_session"); } catch {}
-    window.location.href = "/login";
+    try { document.cookie = "dr_role=; Path=/; Max-Age=0; SameSite=Strict"; } catch {}
+    window.location.href = "/login?reason=expired";
   }
   const data = await res.json().catch(() => null);
   if (!res.ok) {

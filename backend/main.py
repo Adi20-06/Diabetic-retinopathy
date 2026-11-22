@@ -1,15 +1,58 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text , inspect
 import models as M, storage, audit, auth
 import routes_auth, routes_people
 import routes_auth, routes_people, routes_screenings
 from settings import CORS_ORIGINS
 import routes_admin
+from fastapi.responses import JSONResponse
+from settings import CORS_ORIGINS, ENV
+from pathlib import Path
+from alembic import command
+from alembic.config import Config
+import time, uuid
+from logging_setup import log, setup_logging
+setup_logging()
+import pipeline
+from fastapi.responses import JSONResponse
 
-app = FastAPI(title="DR Triage API")
-app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+PROD = ENV == "production"
+MAX_BODY = 90 * 1024 * 1024
+app = FastAPI(title="DR Triage API", docs_url=None if PROD else "/docs", redoc_url=None,
+              openapi_url=None if PROD else "/openapi.json")
+
+@app.middleware("http")
+async def guard_and_log(request, call_next):
+    rid = uuid.uuid4().hex[:12]
+    t0 = time.perf_counter()
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > MAX_BODY:
+        r = JSONResponse({"detail": "Upload too large"}, status_code=413)
+    else:
+        try:
+            r = await call_next(request)
+        except Exception:
+            log.exception(f"UNHANDLED ERROR {request.method} {request.url.path}", extra=dict(rid=rid))
+            r = JSONResponse({"detail": "Something went wrong on the server", "request_id": rid}, status_code=500)
+    ms = int((time.perf_counter() - t0) * 1000)
+    r.headers["X-Request-ID"] = rid
+    r.headers["Cache-Control"] = "no-store"
+    r.headers["X-Content-Type-Options"] = "nosniff"
+    r.headers["X-Frame-Options"] = "DENY"
+    r.headers["Referrer-Policy"] = "no-referrer"
+    r.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if PROD: r.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if not (request.url.path.startswith("/health") and r.status_code == 200):
+        level = log.error if r.status_code >= 500 else log.warning if (r.status_code in (401, 403, 423, 429) or ms > 3000) else log.info
+        level(f"{request.method} {request.url.path} {r.status_code} {ms}ms", extra=dict(
+            rid=rid, method=request.method, path=request.url.path, status=r.status_code, ms=ms,
+            user=getattr(request.state, "user", None), ip=request.client.host if request.client else None))
+    return r
+
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=False,
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"], max_age=600)
 app.include_router(routes_auth.router)
 app.include_router(routes_people.router)
 app.include_router(routes_screenings.router)
@@ -63,15 +106,56 @@ def seed(db: Session):
     for username, role, centre, tmp in creds: print(f"  {username:<8} {role:<8} {centre}   {tmp}")
     print("=" * 90 + "\n")
 
+def run_migrations():
+    """New database: build the tables and mark it up to date.
+    Database from before migrations existed: apply the old fixes once and mark it as the baseline.
+    Then apply any newer migration files."""
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    insp = inspect(M.engine)
+    if not insp.has_table("alembic_version"):
+        if insp.has_table("users"):
+            M.Base.metadata.create_all(M.engine)                  # adds any table an old database lacks
+            with M.engine.begin() as c:
+                for sql in MIGRATIONS: c.execute(text(sql))
+                c.execute(text("INSERT INTO centres (id, name, district, active) VALUES ('PHC-001', 'Kolar Rural PHC', 'Kolar', TRUE) ON CONFLICT (id) DO NOTHING"))
+                c.execute(text("UPDATE users SET centre_id = 'PHC-001' WHERE centre_id IS NULL"))
+                c.execute(text("UPDATE patients SET centre_id = 'PHC-001' WHERE centre_id IS NULL"))
+            command.stamp(cfg, "0001")
+        else:
+            M.Base.metadata.create_all(M.engine)
+            command.stamp(cfg, "head")
+    command.upgrade(cfg, "head")
+
 @app.on_event("startup")
 def startup():
-    M.Base.metadata.create_all(M.engine); storage.init()
-    with M.engine.begin() as c:   # upgrades an existing database without wiping it
-        for sql in MIGRATIONS: c.execute(text(sql))
-        c.execute(text("INSERT INTO centres (id, name, district, active) VALUES ('PHC-001', 'Kolar Rural PHC', 'Kolar', TRUE) ON CONFLICT (id) DO NOTHING"))
-        c.execute(text("UPDATE users SET centre_id = 'PHC-001' WHERE centre_id IS NULL"))
-        c.execute(text("UPDATE patients SET centre_id = 'PHC-001' WHERE centre_id IS NULL"))
+    storage.init(); run_migrations()
     with M.SessionLocal() as db: seed(db)
+
+def db_ok():
+    try:
+        with M.engine.connect() as c: c.execute(text("select 1"))
+        return True
+    except Exception: return False
+
+def storage_ok():
+    try: storage.get("fundus", "__health__"); return True
+    except Exception as e: return getattr(e, "code", "") in ("NoSuchKey", "NoSuchObject")   # "not found" means storage answered
+
+def model_ok(): return bool(getattr(pipeline, "MODEL_VERSION", None))
+
+_ready = {"t": 0.0, "v": None}
+
+@app.get("/health", include_in_schema=False)
+def health():                      # "is the process alive"
+    return {"status": "ok"}
+
+@app.get("/health/ready", include_in_schema=False)
+def ready():                       # "can it actually do its job"
+    if time.time() - _ready["t"] > 5 or _ready["v"] is None:      # cached 5 s so it cannot be used to hammer the database
+        _ready.update(t=time.time(), v={"database": db_ok(), "storage": storage_ok(), "model": model_ok()})
+    body = _ready["v"]; good = all(body.values())
+    return JSONResponse({"status": "ok" if good else "degraded", **body}, status_code=200 if good else 503)
 
 @app.get("/audit/verify")
 def verify(db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):

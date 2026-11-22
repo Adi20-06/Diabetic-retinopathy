@@ -5,14 +5,16 @@
   python manage.py reset-password nurse.divya
   python manage.py deactivate nurse.divya
   python manage.py list
+  import secrets, storage
 """
-import argparse, re, sys
-import models as M, auth, audit
+import argparse, re, secrets, sys
+import models as M, auth, audit, storage
 
 def main():
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add-centre"); a.add_argument("id"); a.add_argument("name"); a.add_argument("--district", default="")
     a = sub.add_parser("add-staff"); a.add_argument("username"); a.add_argument("role", choices=["nurse", "doctor", "admin"])
+    a = sub.add_parser("anonymize-patient"); a.add_argument("patient_id"); a.add_argument("--yes", action="store_true")
     a.add_argument("name"); a.add_argument("--centre", required=True)
     for c in ("reset-password", "deactivate", "activate"): sub.add_parser(c).add_argument("username")
     sub.add_parser("list")
@@ -33,6 +35,26 @@ def main():
                           centre_id=args.centre, must_change=True))
             audit.log(db, "staff_added", detail={"by": "admin-cli", "username": args.username, "role": args.role}); db.commit()
             print(f"Created {args.role} '{args.username}' at {args.centre}\nTemporary password (shown once): {tmp}")
+
+        elif args.cmd == "anonymize-patient":
+            p = db.get(M.Patient, args.patient_id)
+            if not p: sys.exit("No such patient")
+            if p.anonymized_at: sys.exit("Already anonymised")
+            if not args.yes: sys.exit("This PERMANENTLY removes the patient's identity, images and notes. Run again with --yes")
+            for s in db.query(M.Screening).filter_by(patient_id=p.id):
+                for r in db.query(M.EyeRecord).filter_by(screening_id=s.id):
+                    for bucket, key in (("fundus", r.original_key), ("fundus", r.processing_key), ("heatmaps", r.heatmap_key)):
+                        if key: storage.remove(bucket, key)
+                    r.original_key = r.processing_key = r.heatmap_key = None
+                for v in db.query(M.Review).filter_by(screening_id=s.id):
+                    if v.notes: v.notes = "[removed]"
+            p.name, p.dob, p.mobile, p.history = "Anonymised", p.dob[:4] + "-01-01", "0000000000", ""
+            acc = db.get(M.User, p.id)
+            if acc:
+                acc.active, acc.name, acc.password_hash, acc.password_changed_at = False, "Anonymised", auth.hash_pw(secrets.token_urlsafe(32)), M.now()
+            p.anonymized_at = M.now()
+            audit.log(db, "patient_anonymized", detail={"by": "admin-cli", "patient_id": p.id}); db.commit()
+            print(f"{p.id} anonymised. Existing backups still hold the old data until they expire.")
         elif args.cmd == "list":
             for u in db.query(M.User).filter(M.User.role != "patient").order_by(M.User.centre_id, M.User.username):
                 print(f"{u.centre_id}  {u.username:<14} {u.role:<7} {u.name:<20} {'ACTIVE' if u.active is not False else 'DISABLED'}")

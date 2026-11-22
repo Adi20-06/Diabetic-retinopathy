@@ -1,25 +1,21 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { getSession, homeFor } from "@/lib/auth";
+import { useEffect } from "react";
+import { refreshAll } from "@/lib/remote";
+import { useSessionGuard } from "@/lib/guard";
 import type { Role } from "@/lib/nav";
-import { refreshAll } from "@/lib/remote"
 
 export default function RoleGuard({ role, children }: { role: Role; children: React.ReactNode }) {
-  const router = useRouter();
-  const [ok, setOk] = useState(false);
+  const ready = useSessionGuard(role);      // server-verified session, role, forced password change, idle logout
 
-useEffect(() => {
-    const s = getSession();
-    if (!s) router.replace("/login");
-    else if (s.role !== role) router.replace(homeFor(s.role));
-    else { setOk(true); refreshAll(role); }
+  useEffect(() => {
+    if (!ready) return;
+    refreshAll(role);
     const onOnline = () => refreshAll(role);
     window.addEventListener("online", onOnline);
     const timer = setInterval(() => refreshAll(role), 30_000);
     return () => { window.removeEventListener("online", onOnline); clearInterval(timer); };
-  }, [role, router]);
+  }, [ready, role]);
 
-  if (!ok) return <div className="grid min-h-screen place-items-center text-sm text-muted-strong">Loading…</div>;
+  if (!ready) return <div className="grid min-h-screen place-items-center text-sm text-muted-strong">Loading…</div>;
   return <>{children}</>;
 }

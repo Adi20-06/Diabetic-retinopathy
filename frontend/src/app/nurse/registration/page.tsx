@@ -110,6 +110,7 @@ export default function RegistrationPage() {
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 size-5 shrink-0 accent-navy" />
               The patient has consented to screening, image storage and AI-assisted analysis, with doctor review.
             </label>
+            <Link href="/privacy" target="_blank" className="font-medium underline underline-offset-4">Privacy notice</Link>
 
             {dups.length > 0 && (
               <div role="alert" className="rounded-xl bg-gold-light p-4 text-sm text-deep">

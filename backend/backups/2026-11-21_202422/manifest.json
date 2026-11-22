@@ -1,0 +1,11 @@
+{
+  "created": "2026-11-21_202422",
+  "storage_container": "backend-minio-1",
+  "mounts": [
+    "/data"
+  ],
+  "files": {
+    "database.dump": "efe38613392ff8a1f4c964ed0cc730bde9199335f58106c42eb7142b878d71ef",
+    "images0.tar.gz": "3640dcd68e6b597e58c540d5c233c8731f7544c1fa7da9c2e5470b40d70559d8"
+  }
+}

@@ -15,12 +15,22 @@ type Reply = {
 const SESSION_KEY = "dr_session";
 export const homeFor = (role: Role) => (role === "admin" ? "/admin/staff" : `/${role}/dashboard`);
 
+/** A routing hint for the middleware only. It grants nothing: every API call is still checked by the server. */
+function setHint(role: Role | null) {
+  try {
+    document.cookie = role
+      ? `dr_role=${role}; Path=/; SameSite=Strict${location.protocol === "https:" ? "; Secure" : ""}`
+      : "dr_role=; Path=/; Max-Age=0; SameSite=Strict";
+  } catch {}
+}
+
 function save(r: Reply): Session {
   const s: Session = {
     id: r.patient_id ?? r.username, name: r.name, role: r.role, token: r.token,
     mustChange: r.must_change, centre: r.centre_name ?? undefined,
   };
   try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch {}
+  setHint(r.role);
   return s;
 }
 
@@ -47,6 +57,7 @@ export async function changePassword(oldPw: string, newPw: string): Promise<Sess
 }
 
 export function logout() {
+  setHint(null);
   try { localStorage.removeItem(SESSION_KEY); } catch {}
   clearSyncedData();
   setAppts([]);
@@ -62,4 +73,9 @@ export function useSession(): Session | null | undefined {
     if (v?.mustChange && window.location.pathname !== "/change-password") router.replace("/change-password");
   }, [router]);
   return s;
+}
+
+/** Called while the person is active, so a stolen idle token stops working soon. */
+export async function refreshToken(): Promise<Session> {
+  return save(await api<Reply>("/auth/refresh", { method: "POST" }));
 }

@@ -3,6 +3,7 @@ from sqlalchemy import (Column, Integer, String, Float, Boolean, DateTime, Forei
                         UniqueConstraint, create_engine)
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from settings import DB_URL
+from sqlalchemy import text   # add to the existing sqlalchemy import
 
 engine = create_engine(DB_URL)
 SessionLocal = sessionmaker(engine)
@@ -18,6 +19,7 @@ class Centre(Base):
     name = Column(String(120), nullable=False)
     district = Column(String(80), default="")
     active = Column(Boolean, default=True)
+    phone = Column(String(20), default="")
 
 class User(Base):
     __tablename__ = "users"
@@ -43,6 +45,10 @@ class Patient(Base):
     history = Column(String(200), default="")
     verified = Column(Boolean, default=False)
     consent = Column(Boolean, default=False)
+    consent_version = Column(String(10))
+    consent_at = Column(DateTime(timezone=True))
+    consent_by = Column(String(40))
+    anonymized_at = Column(DateTime(timezone=True))
     centre_id = Column(String(12), ForeignKey("centres.id"))
     created_by = Column(String(40))
     created_at = Column(DateTime(timezone=True), default=now)
@@ -101,6 +107,10 @@ class Audit(Base):
     ts = Column(String(40)); action = Column(String(40)); screening_id = Column(String(36))
     detail = Column(JSON); prev_hash = Column(String(64)); hash = Column(String(64))
 
+def lock(db, key: int):
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})     # released at commit
+
 def next_patient_id(db):
+    lock(db, 1)
     nums = [int(pid[1:]) for (pid,) in db.query(Patient.id) if pid[1:].isdigit()]
     return f"P{max([100] + nums) + 1}"

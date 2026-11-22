@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 import models as M, storage, audit, auth, pipeline
 from iqa import assess
 import jpegq
+from io import BytesIO
+from PIL import Image
+from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["screenings"])
 EYES = ("right", "left")
@@ -15,25 +18,45 @@ sha = lambda b: hashlib.sha256(b).hexdigest()
 iso = lambda d: d.isoformat() if d else None
 clean = lambda x: json.loads(json.dumps(x, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
 
+MAX_IMG, MAX_PIXELS = 20 * 1024 * 1024, 40_000_000
+MIME = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "BMP": "image/bmp"}
+
+def read_limited(f, eye):
+    data = f.file.read(MAX_IMG + 1)
+    if len(data) > MAX_IMG: raise HTTPException(413, f"The {eye} eye image is larger than 20 MB")
+    return data
+
+def check_image(data: bytes, eye: str) -> str:
+    """Header check only: real image, allowed type, sane size. The stored content type comes from the file, never from the client."""
+    try:
+        im = Image.open(BytesIO(data)); fmt, (w, h) = im.format, im.size
+    except Exception:
+        raise HTTPException(422, f"The {eye} eye file is not a readable image")
+    if fmt not in MIME: raise HTTPException(422, f"The {eye} eye image must be JPEG or PNG")
+    if w * h > MAX_PIXELS: raise HTTPException(422, f"The {eye} eye image is too large (max 40 megapixels)")
+    return MIME[fmt]
+
 class EyeIn(BaseModel):
-    state: str = "captured"            # captured | completed | quality_failed (the device's view)
-    original_sha256: str; processing_sha256: str
-    capture_count: int = 1
+    state: str = Field("captured", max_length=20)
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    processing_sha256: str = Field(pattern=r"^([0-9a-f]{64})?$")
+    capture_count: int = Field(1, ge=1, le=50)
     quality: dict | None = None
 class SyncIn(BaseModel):
-    client_id: str; patient_id: str; created_at: str
+    client_id: str = Field(min_length=8, max_length=40); patient_id: str = Field(max_length=12); created_at: str = Field(max_length=40)
     send_to_doctor: bool = False
+    doctor: str | None = Field(None, max_length=40)
     eyes: dict[str, EyeIn]
-    doctor: str | None = None
 class ReviewIn(BaseModel):
-    decision: str; final_grades: dict[str, int]
-    notes: str = ""; follow_up: str = "Within 1 month"
+    decision: str = Field(max_length=20); final_grades: dict[str, int]
+    notes: str = Field("", max_length=2000); follow_up: str = Field("Within 1 month", max_length=40)
 
 # ---------- helpers ----------
 def eyes_of(db, sid): return db.query(M.EyeRecord).filter_by(screening_id=sid).all()
 def reviews_of(db, sid): return db.query(M.Review).filter_by(screening_id=sid).order_by(M.Review.id).all()
 
 def next_id(db):
+    M.lock(db, 2)
     nums = [int(i[4:]) for (i,) in db.query(M.Screening.id) if i[4:].isdigit()]
     return f"SCR-{max([1000] + nums) + 1}"
 
@@ -122,6 +145,7 @@ def sync(payload: str = Form(...),
     files = {"right": (right_original, right_processing), "left": (left_original, left_processing)}
 
     s = db.query(M.Screening).filter_by(client_id=p.client_id).first()   # duplicate prevention
+    if s and s.patient_id != p.patient_id: raise HTTPException(409, "This upload does not match the saved screening")
     created = s is None
     if created:
         try: made = dt.datetime.fromisoformat(p.created_at.replace("Z", "+00:00"))
@@ -141,7 +165,8 @@ def sync(payload: str = Form(...),
         if s.sent_to_doctor: raise HTTPException(409, "Already sent to the doctor; images can no longer change")
         orig, proc = files[eye]
         if not orig or not proc: raise HTTPException(422, f"Both image files are required for the {eye} eye")
-        ob, pb = orig.file.read(), proc.file.read()
+        ob, pb = read_limited(orig, eye), read_limited(proc, eye)
+        mime = check_image(ob, eye); check_image(pb, eye)
         if sha(ob) != e.original_sha256 or sha(pb) != e.processing_sha256:
             raise HTTPException(422, f"Checksum mismatch for the {eye} eye: the upload was corrupted, please retry")
         try: img = pipeline.preprocess_512(ob)
@@ -153,7 +178,7 @@ def sync(payload: str = Form(...),
             q["reasons"] = list(q.get("reasons", [])) + ["Image is heavily compressed, capture or export at a higher JPEG quality"]
             q["gradable"] = False                                       # server-side gate decides
         base = f"{s.id}/{eye}-{e.original_sha256[:12]}"
-        storage.put("fundus", base + "-original", ob, orig.content_type or "image/jpeg")
+        storage.put("fundus", base + "-original", ob, mime)
         storage.put("fundus", base + "-processing.jpg", pb, "image/jpeg")
         if rec is None:
             rec = M.EyeRecord(screening_id=s.id, eye=eye, capture_count=e.capture_count); db.add(rec)
@@ -213,7 +238,9 @@ def get_screening(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.curr
 def patient_screenings(pid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
     if u.role == "patient" and u.patient_id != pid: raise HTTPException(403, "Not your record")
     if u.role != "patient": auth.ensure_centre(db, u, pid)
-    qs = db.query(M.Screening).filter_by(patient_id=pid).order_by(M.Screening.created_at.desc())
+    qs = db.query(M.Screening).filter_by(patient_id=pid)
+    if u.role == "doctor": qs = qs.filter(or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
+    qs = qs.order_by(M.Screening.created_at.desc())
     return [view_for(db, s, u, full=False) for s in qs]
 
 # ---------- doctor actions ----------

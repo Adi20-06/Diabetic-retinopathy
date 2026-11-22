@@ -18,3 +18,7 @@ def get(bucket, key) -> bytes:
         
 def url(bucket, key):
     return cli.presigned_get_object(bucket, key, expires=dt.timedelta(minutes=15))
+
+def remove(bucket, key):
+    """Delete one object. MinIO does not complain if it is already gone, so this is safe to repeat."""
+    cli.remove_object(bucket, key)

@@ -30,7 +30,10 @@ export default function LoginPage() {
         <Field id="username" name="username" label="Patient ID or staff username" autoComplete="username" required />
         <Field id="password" name="password" type="password" label="Password" autoComplete="current-password" required />
         {error && <p role="alert" className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">{error}</p>}
+        {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("reason") === "idle" &&
+        <p className="rounded-lg bg-gold-light px-3 py-2 text-sm text-deep">You were signed out after 15 minutes of inactivity.</p>}
         <Button type="submit" variant="gold" className="mt-1 h-12" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</Button>
+        <p className="mt-4 text-xs"><Link href="/privacy" className="underline underline-offset-4">Privacy notice</Link></p>
       </form>
 
       <div className="mt-5 text-sm">

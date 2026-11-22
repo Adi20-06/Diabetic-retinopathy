@@ -41,6 +41,7 @@ def reset(username: str, db: Session = Depends(M.get_db), a=Depends(auth.require
     tmp = auth.temp_password()
     u.password_hash, u.must_change = auth.hash_pw(tmp), True
     u.failed_attempts, u.locked_until, u.password_changed_at = 0, None, M.now()
+    auth.clear_fails(f"user:{u.username.lower()}")
     audit.log(db, "password_reset", detail={"by": a.username, "username": username}); db.commit()
     return {**sj(u), "temp_password": tmp}
 
