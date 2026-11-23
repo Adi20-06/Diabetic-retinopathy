@@ -529,10 +529,7 @@ The gate protects the model: on low-light and over-exposed images, accuracy on t
 
 Rule fixed in advance: accept a level if QWK falls by at most 0.05 and AUROC by at most 0.02 from the clean baseline. Quality **80** is the lowest that passes, so files below it are rejected. Differences of about ±0.02 between neighbouring levels are sampling noise (1,200 images).
 
-![JPEG curve](docs/figures/jpeg_curve.png)
 
-### Explainability
-![Grad-CAM++ example](docs/figures/gradcam.png)
 
 ---
 
