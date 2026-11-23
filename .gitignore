@@ -30,4 +30,6 @@ outputs/
 # IDE
 .vscode/
 
+backend/.env
 backend/logs/
+backups/

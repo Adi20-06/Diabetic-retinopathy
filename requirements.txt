@@ -17,3 +17,4 @@ torchvision>=0.17
 timm>=0.9
 grad-cam>=1.5
 alembic>=1.13
+cryptography

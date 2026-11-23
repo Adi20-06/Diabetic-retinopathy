@@ -32,3 +32,14 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
         env: { NEXT_PUBLIC_API_URL: "http://127.0.0.1:8000" }
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pip-audit && pip-audit -r backend/requirements.txt

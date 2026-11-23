@@ -37,7 +37,8 @@
 12. [Development workflow](#-development-workflow)
 13. [Project structure](#-project-structure)
 14. [Limitations](#-limitations)
-15. [Troubleshooting & FAQ](#-troubleshooting--faq)
+15. [Operations: backups, monitoring, AI worker, migrations, security](#-operations)
+16. [Troubleshooting & FAQ](#-troubleshooting--faq)
 
 ---
 
@@ -241,12 +242,14 @@ docker compose up -d
 ```
 This starts PostgreSQL (host port **5433**) and RustFS storage (**9000** API, **9001** console, login `minioadmin` / `minioadmin`).
 
-### 2. Start the API
+### 2. Start the API and the AI worker
 ```bash
 cd backend
 pip install -r requirements.txt
-python -m uvicorn main:app --reload
+python -m uvicorn main:app --reload      # terminal 1: the API
+python worker.py                         # terminal 2: runs the AI on uploaded cases
 ```
+The API answers uploads immediately and the worker does the AI in the background. For a single-terminal setup set `AI_MODE=inline`.
 Interactive API docs: **http://127.0.0.1:8000/docs**
 
 ### 3. Start the web app
@@ -526,7 +529,10 @@ The gate protects the model: on low-light and over-exposed images, accuracy on t
 
 Rule fixed in advance: accept a level if QWK falls by at most 0.05 and AUROC by at most 0.02 from the clean baseline. Quality **80** is the lowest that passes, so files below it are rejected. Differences of about ±0.02 between neighbouring levels are sampling noise (1,200 images).
 
+![JPEG curve](docs/figures/jpeg_curve.png)
 
+### Explainability
+![Grad-CAM++ example](docs/figures/gradcam.png)
 
 ---
 
@@ -661,14 +667,14 @@ cd frontend && npm run dev                # web app reloads when you save a file
 | You changed… | What to do |
 |---|---|
 | Python or TypeScript code | Nothing in the fast loop. After a Docker build, rebuild the image (`docker compose up --build`) |
-| **Database tables** (`models.py`) | `create_all` creates new tables but **does not alter existing ones**. Add an `ALTER TABLE … IF NOT EXISTS` (see `main.py` startup) or reset your dev database with `docker compose down -v` |
+| **Database tables** (`models.py`) | Make a migration: `python backup.py run`, then `alembic revision --autogenerate -m "what changed"`, read the new file in `migrations/versions/`, then `alembic upgrade head` |
 | `NEXT_PUBLIC_API_URL` | Next.js bakes it in at build time, so restart `npm run dev` (or rebuild the web image) |
 | The model or calibration | Replace the files in `backend/model/`, restart the API |
 | JPEG threshold | Change **both** `backend/jpegq.py` (`MIN_QUALITY`) and `src/lib/jpegq.ts` (`MIN_JPEG_QUALITY`) |
 | Quality-gate thresholds | Change both `backend/iqa.py` and `frontend/src/lib/iqa.ts` so device and server agree |
-| Secrets | Set a strong `JWT_SECRET`; never commit `.env` files. Demo accounts use random temporary passwords, so there are none to change |
+| Secrets | Run `python secrets_check.py`; never commit `.env` files (see Operations → Secrets). Demo accounts use random temporary passwords |
 | Password rules | Change both `policy_error` in `backend/auth.py` and the rules list in `frontend/src/app/change-password/page.tsx` |
-| New table columns on users, patients or screenings | Add an `ALTER TABLE ... IF NOT EXISTS` line to `MIGRATIONS` in `main.py` |
+| Anything that changes behaviour | Run `pytest` in `backend`; CI runs it on every push |
 </details>
 
 **Model files are large and are not committed.** Keep `outputs/*.pt` and `*.onnx` out of git (use Git LFS or a release asset), and commit only the small figures in `docs/figures/`.
@@ -687,6 +693,9 @@ dr-triage/
 ├─ data/                   datasets and splits            (not in git)
 ├─ outputs/                trained model + result tables   (large files not in git)
 ├─ docs/figures/           figures used in this README
+├─ docs/COMPLIANCE.md      intended use, CDSCO, ICMR, DPDP notes
+├─ docs/RUNBOOK.md         what to do when something goes wrong
+├─ .github/workflows/ci.yml  tests, build, secret and dependency scan
 ├─ backend/
 │  ├─ main.py              app, seed data, startup
 │  ├─ models.py            database tables
@@ -695,7 +704,12 @@ dr-triage/
 │  ├─ manage.py            admin CLI: centres, staff, password resets
 │  ├─ pipeline.py          preprocessing, ONNX inference, Grad-CAM++
 │  ├─ iqa.py · jpegq.py    server-side quality gate
-│  ├─ audit.py · storage.py
+│  ├─ audit.py · storage.py · paging.py · settings.py
+│  ├─ ai_jobs.py · worker.py       background AI queue and its worker process
+│  ├─ backup.py · secure_backup.py · monitor.py · logging_setup.py · secrets_check.py
+│  ├─ migrations/          Alembic database migrations
+│  ├─ tests/               pytest suite (auth, centres, flow, security sweep, AI queue, scaling)
+│  ├─ logs/                api.log, worker.json   (not in git)
 │  ├─ model/               dr.onnx · best.pt · calib.json
 │  └─ docker-compose.yml   PostgreSQL + RustFS
 └─ frontend/
@@ -715,7 +729,62 @@ dr-triage/
 - **Compression check** cannot judge lossless files that were earlier saved as low-quality JPEG, or JPEGs with non-standard tables. The threshold came from re-compressing 512 px images, so it is conservative.
 - **Patient registration needs a connection.** Screening of already-registered patients works offline.
 - **No email or SMS.** Forgotten passwords are reset by a person (administrator for staff, nurse for patients), and temporary passwords appear on screen, so hand them over privately. The first administrator is created from the command line. There is no two-factor sign-in.
+- **Regulatory and ethical status:** see `docs/COMPLIANCE.md`. The platform is decision support for a trained doctor, not an autonomous diagnosis tool.
 - A doctor logging into a device that still holds a nurse's not-yet-uploaded records would see them until they sync.
+
+---
+
+## 🛟 Operations
+
+> Step-by-step fixes for every problem below are in **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+
+```mermaid
+flowchart LR
+  N[Nurse app<br/>offline-first] -->|sync| API[FastAPI<br/>several workers OK]
+  API --> DB[(PostgreSQL)]
+  API --> S[(Image storage)]
+  API -. queues the AI job .-> DB
+  W[AI worker<br/>python worker.py] -->|takes a job, SKIP LOCKED| DB
+  W --> S
+  M[monitor.py] -. watches .-> API
+  M -. watches .-> W
+  M -. checks age .-> B[(Backups)]
+  BK[backup.py + secure_backup.py] --> B
+  DB --> BK
+  S --> BK
+```
+
+| Area | What exists | Command or file |
+|---|---|---|
+| **Backups** | Nightly dump of the database plus images, a manifest with checksums, test-restore into a throwaway database, keeps the last 14 | `python backup.py run \| list \| verify \| restore <folder> --yes` |
+| **Encrypted backups** | AES-256-GCM, password-derived key, round-trip verified before the plaintext is removed | `python secure_backup.py encrypt backups` / `decrypt <path>` |
+| **Migrations** | Alembic. Take a backup first, read the generated file, apply | `alembic revision --autogenerate -m "..."` then `alembic upgrade head` |
+| **Health** | `/health` (alive), `/health/ready` (database, storage and model; 503 when degraded) | open in a browser |
+| **Logs** | Rotating JSON lines with request IDs; optional Sentry | `backend/logs/api.log` |
+| **Alerts** | Windows popup when the API, disk, backup age or AI worker is unhealthy | `python monitor.py` (`check` for a one-off) |
+| **AI queue** | Uploads return at once; a worker runs the AI; 3 retries with backoff; crashed jobs are recovered; failed jobs have a Retry button | `python worker.py`, `AI_MODE=inline` for one terminal |
+| **Scaling** | Several API workers are safe: login throttle in the database, paged lists (`?limit=&offset=`, total in `X-Total-Count`), indexes, one-minute analytics cache, locked startup | `python -m uvicorn main:app --workers 2` |
+| **Tests and CI** | pytest against a throwaway database, GitHub Actions (backend, frontend, secret and dependency scan) | `pytest` in `backend` |
+| **Secrets** | Weak or default secrets are flagged; production refuses to start with them; the token key rotates without signing anyone out | `python secrets_check.py`, `JWT_SECRET_OLD` |
+| **Compliance** | Intended use, CDSCO, ICMR and DPDP notes; versioned consent; patient data export; erasure by anonymising | [docs/COMPLIANCE.md](docs/COMPLIANCE.md), `python manage.py anonymize-patient P001` |
+
+### Security in one place
+- Every API endpoint needs a valid token (an automated sweep checks all of them with no token, a garbage token and a wrong scheme).
+- Staff see only their own centre; doctors see only cases assigned to them; patients see only their own released reports.
+- Passwords: PBKDF2-SHA256 (600,000 rounds), a policy, temporary passwords shown once, forced change at first sign-in, lockout after 5 failures per account and 20 per address, uniform responses for unknown users.
+- Tokens last 30 minutes, are renewed while the app is in use, and die when the password changes or the account is disabled.
+- Uploads: size limits, image header checks, stored type taken from the file itself. Security headers and a content security policy on every response.
+- Presigned image links expire after 15 minutes. The audit log is hash-chained, so edits are detectable (`GET /audit/verify`).
+
+### Before a review or demo
+Follow the checklist at the end of the runbook (backup and verify, tests green, secrets clean, one full journey, one offline test, `git tag review-3`).
+
+### Known operational limits
+- Deployment today is local (Docker for the database and storage). **HTTPS and a full containerised deployment are not done yet.**
+- Backups are on the same machine unless you copy them away; encrypted backups protect a lost drive, not a stolen whole computer.
+- The token is stored in the browser (mitigated by the content security policy); there is no two-factor sign-in.
+- The AI queue lives in the database: right for thousands of cases a day; beyond that, a dedicated queue is the next step.
+- The nurse app needs a connection for the first page load; opening it fully offline from a cold start (a service worker) is not implemented.
 
 ---
 
@@ -767,6 +836,12 @@ There are no default passwords. On a fresh database the API terminal prints a ta
 <summary><b>"Too many wrong attempts"</b></summary>
 
 The account is locked for 10 minutes after 5 wrong passwords. Wait, or have it reset by the administrator (staff) or a nurse (patients), which also unlocks it.
+</details>
+
+<details>
+<summary><b>The doctor sees "AI results are not available yet"</b></summary>
+
+The AI runs in a separate worker. Check that `python worker.py` is running. Waiting cases are processed as soon as it starts. See the runbook, section 3.
 </details>
 
 <details>

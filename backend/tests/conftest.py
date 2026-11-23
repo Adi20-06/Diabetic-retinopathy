@@ -67,9 +67,10 @@ def H(client):
 
 @pytest.fixture(autouse=True)
 def fresh_throttle():
-    import auth
-    auth._fails.clear()
+    import auth, paging
+    auth.reset_throttle(); paging.clear_cache()
     yield
+    auth.reset_throttle(); paging.clear_cache()
 
 @pytest.fixture(autouse=True)
 def stub_gate(monkeypatch):

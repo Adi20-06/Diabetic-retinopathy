@@ -10,6 +10,8 @@ import jpegq
 from io import BytesIO
 from PIL import Image
 from pydantic import BaseModel, Field
+import ai_jobs
+from paging import Page, cached
 
 router = APIRouter(tags=["screenings"])
 EYES = ("right", "left")
@@ -67,17 +69,6 @@ def priority(recs):
     if any(a["uncertain"] for a in ai): return "uncertain"
     return "non-referable"
 
-def run_ai(db, s):
-    """AI runs only on accepted, gradable images, once, after the case is sent to the doctor."""
-    for r in eyes_of(db, s.id):
-        if r.state != "completed" or r.ai: continue
-        img = pipeline.preprocess_512(storage.get("fundus", r.original_key))
-        out, x = pipeline.predict(img)
-        hk = f"{s.id}/{r.eye}-{r.original_sha256[:12]}.jpg"
-        storage.put("heatmaps", hk, pipeline.heatmap(img, x, out["grade"]))
-        r.heatmap_key, r.model_version = hk, pipeline.MODEL_VERSION
-        r.ai = clean({**out, "referable": out["referable_prob"] >= pipeline.CAL["ref_thr"], "uncertain": out["triage"] == "Uncertain"})
-    s.ai_state = "done"
 
 def eye_json(r, role, full=True):
     d = dict(eye=r.eye, state=r.state, quality=r.quality, capture_count=r.capture_count)
@@ -106,6 +97,7 @@ def staff_view(db, s, role, full=True):
     a = db.get(M.User, s.assigned_to) if s.assigned_to else None
     d["assigned_name"] = a.name if a else None
     if role == "doctor":
+        d["ai_error"] = s.ai_error
         d["priority"] = priority(recs)
         d["reviews"] = [review_json(v) for v in reviews_of(db, s.id)]
     return d
@@ -205,7 +197,7 @@ def sync(payload: str = Form(...),
             send_rejected = "Choose a doctor from your health centre"
         elif s.status == "completed":
             s.sent_to_doctor, s.doctor_review, s.ai_state, s.assigned_to = M.now(), "pending", "queued", doc.username
-            run_ai(db, s)
+            ai_jobs.after_send(db, s)
         else:
             send_rejected = "Every screened eye needs an accepted, gradable image first"
     audit.log(db, "screening_synced", s.id, dict(by=u.username, created=created, new_images=changed, duplicate_images=dup,
@@ -217,12 +209,12 @@ def sync(payload: str = Form(...),
 
 # ---------- reading ----------
 @router.get("/screenings")
-def list_screenings(full: bool = False, db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor"))):
+def list_screenings(full: bool = False, db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor")) , pg: Page = Depends()):
     qs = (db.query(M.Screening).join(M.Patient, M.Patient.id == M.Screening.patient_id)
             .filter(M.Patient.centre_id == u.centre_id))
     if u.role == "nurse": qs = qs.filter(M.Screening.operator == u.username)
     else: qs = qs.filter(M.Screening.sent_to_doctor.isnot(None), or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
-    return [staff_view(db, s, u.role, full=full) for s in qs.order_by(M.Screening.created_at.desc()).limit(300)]
+    return [staff_view(db, s, u.role, full=full) for s in pg.apply(qs.order_by(M.Screening.created_at.desc()))]
 
 @router.get("/screenings/{sid}")
 def get_screening(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
@@ -253,7 +245,8 @@ def add_review(sid: str, b: ReviewIn, db: Session = Depends(M.get_db), u=Depends
     if not s or not s.sent_to_doctor: raise HTTPException(404, "Screening not found")
     auth.ensure_centre(db, u, s.patient_id)
     if s.assigned_to not in (None, u.username): raise HTTPException(403, "This case is assigned to another doctor")
-    if s.ai_state != "done": raise HTTPException(409, "AI results are not ready yet")
+    if s.ai_state != "done":
+        raise HTTPException(409, "AI results are not ready yet" if s.ai_state in ("queued", "running") else "AI processing failed. Ask for a retry")
     if b.decision not in DECISIONS: raise HTTPException(422, "Unknown decision")
     recs = {r.eye: r for r in eyes_of(db, sid)}
     if set(b.final_grades) != set(recs) or any(not 0 <= g <= 4 for g in b.final_grades.values()):
@@ -281,6 +274,9 @@ def release(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("d
 # ---------- analytics and audit ----------
 @router.get("/analytics")
 def analytics(db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
+    return cached(f"analytics:{u.centre_id}", 60, lambda: _analytics(db, u))      # at most one heavy calculation a minute per centre
+
+def _analytics(db, u):
     ss = (db.query(M.Screening).join(M.Patient, M.Patient.id == M.Screening.patient_id)
             .filter(M.Patient.centre_id == u.centre_id).all())
     ids = {s.id for s in ss}
@@ -336,4 +332,15 @@ def assign(sid: str, b: AssignIn, db: Session = Depends(M.get_db), u=Depends(aut
     if not doc: raise HTTPException(422, "Choose a doctor from your health centre")
     s.assigned_to = doc.username
     audit.log(db, "doctor_assigned", sid, dict(by=u.username, doctor=doc.username)); db.commit()
+    return staff_view(db, s, u.role)
+
+@router.post("/screenings/{sid}/retry-ai")
+def retry_ai(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor", "nurse"))):
+    s = db.get(M.Screening, sid)
+    if not s or not s.sent_to_doctor: raise HTTPException(404, "Screening not found")
+    auth.ensure_centre(db, u, s.patient_id)
+    if u.role == "doctor" and s.assigned_to not in (None, u.username): raise HTTPException(404, "Screening not found")
+    if s.ai_state != "failed": raise HTTPException(409, "Only a failed AI job can be retried")
+    s.ai_state, s.ai_attempts, s.ai_next_try, s.ai_error = "queued", 0, None, None
+    audit.log(db, "ai_retry", sid, dict(by=u.username)); db.commit()
     return staff_view(db, s, u.role)

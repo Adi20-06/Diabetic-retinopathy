@@ -1,10 +1,12 @@
 import hashlib, json, datetime as dt
 from models import Audit
+from sqlalchemy import text
 
 def _h(prev, ts, action, sid, detail):
     return hashlib.sha256(json.dumps([prev, ts, action, sid, detail], sort_keys=True).encode()).hexdigest()
 
 def log(db, action, sid=None, detail=None):
+    db.execute(text("SELECT pg_advisory_xact_lock(4)"))      # one audit writer at a time, so the hash chain never forks
     last = db.query(Audit).order_by(Audit.id.desc()).first()
     prev = last.hash if last else "0" * 64
     ts, detail = dt.datetime.now(dt.timezone.utc).isoformat(), detail or {}

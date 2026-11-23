@@ -45,7 +45,8 @@ export default function ResultsClient() {
   const p = db.patients.find((x) => x.id === s.patientId);
   const chosen = EYES.filter((e) => s[e.key]);
   const canSend = s.status === "completed" && !s.sentToDoctor;
-  const aiLabel = s.ai === "done" ? "Processed" : s.ai === "queued" ? "Queued, runs after sync" : "Not started";
+  const aiLabel = s.ai === "done" ? "Processed" : s.ai === "running" ? "Processing now" : s.ai === "queued" ? "Queued on the server"
+    : s.ai === "failed" ? "Failed, a doctor can retry" : "Not started";
   const reviewLabel = !s.sentToDoctor ? "Not sent to doctor" : s.doctorReview === "reviewed" ? "Reviewed" : "Waiting for doctor";
   const nextStep = (e: Eye) => {
     const st = s[e];

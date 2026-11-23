@@ -7,6 +7,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from settings import CONSENT_VERSION
 import datetime as dt
+from paging import Page
+
 
 router = APIRouter(tags=["people"])
 
@@ -27,12 +29,12 @@ def aj(a):
                 created_at=a.created_at.isoformat())
 
 @router.get("/patients")
-def search(q: str = Query("", max_length=60), db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor"))):
+def search(q: str = "", pg: Page = Depends(), db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor"))):
     qs = db.query(M.Patient).filter(M.Patient.centre_id == u.centre_id, M.Patient.anonymized_at.is_(None))
     if q.strip():
         t = f"%{q.strip()}%"
         qs = qs.filter(or_(M.Patient.name.ilike(t), M.Patient.id.ilike(t), M.Patient.mobile.like(t)))
-    return [pj(p) for p in qs.order_by(M.Patient.id).limit(200)]
+    return [pj(p) for p in pg.apply(qs.order_by(M.Patient.id))]
 
 @router.post("/patients")
 def add(b: PatientIn, force: bool = False, db: Session = Depends(M.get_db), u=Depends(auth.require("nurse"))):
@@ -94,13 +96,12 @@ def request_appt(b: ApptIn, db: Session = Depends(M.get_db), u=Depends(auth.requ
     return aj(a)
 
 @router.get("/appointments")
-def list_appts(db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
+def list_appts(pg: Page = Depends(), db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
     qs = db.query(M.Appointment)
     if u.role == "patient": qs = qs.filter_by(patient_id=u.patient_id)
     else:
         qs = qs.join(M.Patient, M.Patient.id == M.Appointment.patient_id).filter(M.Patient.centre_id == u.centre_id)
-    return [aj(a) for a in qs.order_by(M.Appointment.created_at.desc())]
-
+    return [aj(a) for a in pg.apply(qs.order_by(M.Appointment.created_at.desc()))]
 @router.post("/appointments/{aid}/cancel")
 def cancel(aid: str, db: Session = Depends(M.get_db), u=Depends(auth.require("patient"))):
     a = db.get(M.Appointment, aid)

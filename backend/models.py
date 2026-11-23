@@ -1,11 +1,11 @@
 import datetime as dt
 from sqlalchemy import (Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON, Text,
-                        UniqueConstraint, create_engine)
+                        UniqueConstraint, create_engine , Index)
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from settings import DB_URL
 from sqlalchemy import text   # add to the existing sqlalchemy import
 
-engine = create_engine(DB_URL)
+engine = create_engine(DB_URL, pool_size=10, max_overflow=10, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(engine)
 class Base(DeclarativeBase): pass
 now = lambda: dt.datetime.now(dt.timezone.utc)
@@ -65,6 +65,11 @@ class Screening(Base):
     synced_at = Column(DateTime(timezone=True))
     sent_to_doctor = Column(DateTime(timezone=True))
     ai_state = Column(String(10))                           # queued | done
+    ai_attempts = Column(Integer, default=0)
+    ai_error = Column(String(200))
+    ai_started_at = Column(DateTime(timezone=True))
+    ai_finished_at = Column(DateTime(timezone=True))
+    ai_next_try = Column(DateTime(timezone=True))           # a retry waits until this time
     doctor_review = Column(String(10))                      # pending | reviewed
     report_released = Column(DateTime(timezone=True))
     assigned_to = Column(String(40))                        # doctor's username chosen by the nurse
@@ -107,6 +112,12 @@ class Audit(Base):
     ts = Column(String(40)); action = Column(String(40)); screening_id = Column(String(36))
     detail = Column(JSON); prev_hash = Column(String(64)); hash = Column(String(64))
 
+class LoginFail(Base):
+    __tablename__ = "login_fails"
+    id = Column(Integer, primary_key=True)
+    key = Column(String(120), nullable=False)             # "user:nurse1" or "ip:1.2.3.4"
+    at = Column(DateTime(timezone=True), nullable=False, default=now)
+    
 def lock(db, key: int):
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})     # released at commit
 
@@ -114,3 +125,16 @@ def next_patient_id(db):
     lock(db, 1)
     nums = [int(pid[1:]) for (pid,) in db.query(Patient.id) if pid[1:].isdigit()]
     return f"P{max([100] + nums) + 1}"
+
+Index("ix_screenings_patient", Screening.patient_id)
+Index("ix_screenings_operator_created", Screening.operator, Screening.created_at.desc())
+Index("ix_screenings_assigned", Screening.assigned_to, Screening.sent_to_doctor)
+Index("ix_screenings_queue", Screening.ai_state, Screening.ai_next_try)        # the worker's "what's next" lookup
+Index("ix_eyes_screening", EyeRecord.screening_id)
+Index("ix_reviews_screening", Review.screening_id)
+Index("ix_appts_patient", Appointment.patient_id)
+Index("ix_patients_centre", Patient.centre_id)
+Index("ix_users_centre", User.centre_id)
+Index("ix_audit_screening", Audit.screening_id)
+Index("ix_login_fails_key_at", LoginFail.key, LoginFail.at)
+Index("ix_login_fails_at", LoginFail.at)

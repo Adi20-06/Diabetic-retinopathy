@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const ROLES = ["nurse", "doctor", "patient", "admin"];
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const role = req.cookies.get("dr_role")?.value;
   const first = req.nextUrl.pathname.split("/")[1];
   const go = (path: string) => { const u = req.nextUrl.clone(); u.pathname = path; u.search = ""; return NextResponse.redirect(u); };

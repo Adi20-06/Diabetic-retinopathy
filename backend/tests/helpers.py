@@ -51,3 +51,10 @@ def build(patient_id, eyes=("right", "left"), doctor=None, send=False, cid=None)
 
 def post_sync(client, headers, payload, files):
     return client.post("/sync/screenings", data={"payload": json.dumps(payload)}, files=files, headers=headers)
+
+def run_ai_jobs():
+    """Plays the worker: processes every waiting job, returns how many it did."""
+    import ai_jobs, models as M
+    n = 0
+    while ai_jobs.run_one(M.SessionLocal): n += 1
+    return n

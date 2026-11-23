@@ -43,7 +43,7 @@ export type Screening = {
   quality?: { right?: IqaStored; left?: IqaStored };
   sentToDoctor?: string;
   doctorReview?: "pending" | "reviewed";
-  ai?: "queued" | "done";
+  ai?: "queued" | "running" | "done" | "failed";
   aiResult?: { right?: EyeAi; left?: EyeAi };
   reviewHistory?: ReviewEntry[];
   reportReleased?: string;
@@ -306,7 +306,7 @@ export type ServerReview = { by: string; decision: Decision; final_grades: { rig
 export type ServerScreening = {
   id: string; client_id: string | null; patient_id: string; operator?: string | null; status: ScreeningStatus;
   failed_checks: number; created_at: string; synced_at: string | null; sent_to_doctor: string | null;
-  ai_state: "queued" | "done" | null; doctor_review: "pending" | "reviewed" | null; report_released: string | null;
+  ai_state: "queued" | "running" | "done" | "failed" | null; doctor_review: "pending" | "reviewed" | null; report_released: string | null;
   eyes: Partial<Record<Eye, ServerEye>>; reviews?: ServerReview[]; send_rejected?: string | null;  assigned_to?: string | null; assigned_name?: string | null;
 };
 export type PatientView = {

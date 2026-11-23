@@ -1,5 +1,5 @@
 import json
-from helpers import (new_patient, build, post_sync, make_staff, staff_login, patient_login, sha)
+from helpers import (new_patient, build, post_sync, make_staff, staff_login, patient_login, run_ai_jobs , sha)
 
 def test_full_journey(client, H):
     p = new_patient(client, H["nurse1"])
@@ -11,8 +11,11 @@ def test_full_journey(client, H):
     r = post_sync(client, H["nurse1"], payload, files)
     assert r.status_code == 200, r.text
     s = r.json(); sid = s["id"]
-    assert s["status"] == "completed" and s["ai_state"] == "done" and s["assigned_to"] == "doctor1"
+    assert s["status"] == "completed" and s["ai_state"] == "queued" and s["assigned_to"] == "doctor1"   # the upload returns before the AI runs
     assert "ai" not in s["eyes"]["right"]                                   # the nurse never sees the AI result
+    early = dict(decision="follow_up", final_grades={"right": 2, "left": 2}, notes="x")
+    assert client.post(f"/screenings/{sid}/reviews", json=early, headers=H["doctor1"]).status_code == 409   # AI not finished yet
+    assert run_ai_jobs() >= 1                                   # the nurse never sees the AI result
 
     d = client.get(f"/screenings/{sid}", headers=H["doctor1"])
     assert d.status_code == 200 and d.json()["eyes"]["right"]["ai"]["grade"] == 2
@@ -87,6 +90,7 @@ def test_nurse_can_change_doctor_until_the_review_is_done(client, H):
     p = new_patient(client, H["nurse1"])
     payload, files = build(p["id"], send=True, doctor="doctor1")
     sid = post_sync(client, H["nurse1"], payload, files).json()["id"]
+    run_ai_jobs()
     assert client.get(f"/screenings/{sid}", headers=doc2).status_code == 404
 
     assert client.post(f"/screenings/{sid}/assign", json={"doctor": "doctor2"}, headers=H["nurse1"]).status_code == 422   # other centre

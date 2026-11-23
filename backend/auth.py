@@ -4,7 +4,8 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import models as M
-from settings import JWT_SECRET, TOKEN_MINUTES
+from settings import JWT_SECRET, TOKEN_MINUTES , JWT_SECRET_OLD
+
 
 MAX_FAILS, LOCK_MIN, ITER = 5, 10, 600_000
 
@@ -30,21 +31,30 @@ _DUMMY = hash_pw("timing-equaliser")
 def dummy_check(pw: str): check_pw(pw, _DUMMY)      # unknown users cost the same time as known ones
 
 # ---- failed-login throttle (per process). Same behaviour for real and made-up usernames. ----
+# ---- failed-login throttle: stored in the database, so every worker and server shares it ----
 WINDOW = 600
-_fails: dict[str, list[float]] = {}
-def _recent(key):
-    now = time.time(); l = [t for t in _fails.get(key, []) if now - t < WINDOW]
-    if l: _fails[key] = l
-    else: _fails.pop(key, None)
-    return l
 def blocked(key: str, limit: int) -> int:
     """Seconds left if blocked, else 0."""
-    l = _recent(key)
-    return int(l[0] + WINDOW - time.time()) + 1 if len(l) >= limit else 0
+    key = key[:120]
+    since = M.now() - dt.timedelta(seconds=WINDOW)
+    with M.SessionLocal() as db:
+        rows = (db.query(M.LoginFail.at).filter(M.LoginFail.key == key, M.LoginFail.at > since)
+                  .order_by(M.LoginFail.at).limit(limit).all())
+    return int((rows[0][0] - since).total_seconds()) + 1 if len(rows) >= limit else 0
+
 def record_fail(key: str):
-    if len(_fails) > 20000: _fails.clear()
-    _fails.setdefault(key, []).append(time.time())
-def clear_fails(key: str): _fails.pop(key, None)
+    with M.SessionLocal() as db:
+        db.add(M.LoginFail(key=key[:120]))
+        db.query(M.LoginFail).filter(M.LoginFail.at < M.now() - dt.timedelta(seconds=WINDOW)).delete()   # tidy up old rows
+        db.commit()
+
+def clear_fails(key: str):
+    with M.SessionLocal() as db:
+        db.query(M.LoginFail).filter(M.LoginFail.key == key[:120]).delete(); db.commit()
+
+def reset_throttle():                                          # used by the tests
+    with M.SessionLocal() as db:
+        db.query(M.LoginFail).delete(); db.commit()
 
 def temp_password() -> str:
     letters, digits = "abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ", "23456789"
@@ -73,13 +83,22 @@ def make_token(u) -> str:
     return jwt.encode({"sub": u.username, "role": u.role, "pv": _pv(u), "iat": now,
                        "exp": now + dt.timedelta(minutes=TOKEN_MINUTES)}, JWT_SECRET, algorithm="HS256")
 
+def decode_token(token: str) -> dict:
+    """New tokens are signed with JWT_SECRET. During a rotation, tokens signed with the old key still work."""
+    last = None
+    for k in (JWT_SECRET, JWT_SECRET_OLD):
+        if not k: continue
+        try: return jwt.decode(token, k, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+        except jwt.InvalidTokenError as e: last = e
+    raise last or jwt.InvalidTokenError("no key")
+
 bearer = HTTPBearer(auto_error=False)      # a missing token is our own clean 401, not FastAPI's 403
 
 def current_user_any(request: Request, cred: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(M.get_db)):
     unauth = HTTPException(401, "Session expired or invalid, please log in again", headers={"WWW-Authenticate": "Bearer"})
     if not cred or cred.scheme.lower() != "bearer": raise unauth
     try:
-        data = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+        data = decode_token(cred.credentials)
     except jwt.PyJWTError:
         raise unauth
     u = db.get(M.User, data["sub"])

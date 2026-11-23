@@ -57,8 +57,19 @@ def report(name, problem):
         if s[1]: alert(f"RECOVERED: {name} is fine again", good=True)
         state[name] = [0, False]
 
+def check_worker():
+    try: d = json.loads((Path(__file__).resolve().parent / "logs" / "worker.json").read_text())
+    except Exception: return "the AI worker has not started (no heartbeat file)"
+    age = time.time() - d["t"]
+    if age > 120: return f"the AI worker stopped ({age:.0f} s since its last heartbeat)"
+    if d["oldest_wait_s"] > 300: return f"the AI queue is stuck: oldest case waiting {d['oldest_wait_s'] // 60} min"
+    if d["failed"] > 0: return f"{d['failed']} case(s) failed AI processing and need a retry"
+    return None
+
 if __name__ == "__main__":
     alert("monitor started", show=False)
     while True:
         report("API", check_api()); report("disk", check_disk()); report("backup", check_backup())
+        report("AI worker", check_worker()) 
         time.sleep(EVERY)
+

@@ -17,6 +17,7 @@ from logging_setup import log, setup_logging
 setup_logging()
 import pipeline
 from fastapi.responses import JSONResponse
+from contextlib import contextmanager
 
 PROD = ENV == "production"
 MAX_BODY = 90 * 1024 * 1024
@@ -52,7 +53,7 @@ async def guard_and_log(request, call_next):
     return r
 
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=False,
-                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"], max_age=600)
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"],expose_headers=["X-Total-Count"], max_age=600)
 app.include_router(routes_auth.router)
 app.include_router(routes_people.router)
 app.include_router(routes_screenings.router)
@@ -127,10 +128,24 @@ def run_migrations():
             command.stamp(cfg, "head")
     command.upgrade(cfg, "head")
 
+import secrets_check;
+secrets_check.enforce()
+
+@contextmanager
+def startup_lock():
+    """Only one worker at a time may migrate and seed. The others wait here, then find it already done."""
+    with M.engine.connect() as c:
+        c.execute(text("SELECT pg_advisory_lock(7)")); c.commit()
+        try: yield
+        finally:
+            c.execute(text("SELECT pg_advisory_unlock(7)")); c.commit()
+
 @app.on_event("startup")
 def startup():
-    storage.init(); run_migrations()
-    with M.SessionLocal() as db: seed(db)
+    storage.init(); 
+    with startup_lock():
+        run_migrations()           # keep your existing seed call exactly as it is
+        with M.SessionLocal() as db: seed(db)
 
 def db_ok():
     try:
