@@ -15,4 +15,4 @@ if len(JWT_SECRET) < 32:
 
 CONSENT_VERSION = "1.0"          # bump when the consent wording changes
 
-AI_MODE = os.getenv("AI_MODE", "queue")     # "queue": a worker runs the AI. "inline": the API runs it itself (old behaviour)
+AI_MODE = os.getenv("AI_MODE", "embedded")     # embedded | queue | inline

@@ -43,7 +43,7 @@ export default function ReportClient() {
         <div className="border-b border-deep/10 pb-4">
           <div className="text-xs uppercase tracking-wide text-muted-strong">Eye screening report</div>
           <h2 className="font-display text-2xl font-semibold text-deep">{patient.name}</h2>
-          <div className="text-sm text-muted-strong">Patient ID {patient.id} · reviewed by {last.by} on {formatDateTime(last.at)}</div>
+          <div className="text-sm text-muted-strong">Patient ID {patient.id} · reviewed by Dr.{last.by} on {formatDateTime(last.at)}</div>
         </div>
 
         <div className="mt-5 rounded-xl bg-gold-light/60 p-4 text-deep">

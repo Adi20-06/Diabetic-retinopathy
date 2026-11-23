@@ -49,3 +49,15 @@ def test_other_centre_doctor_cannot_review_or_release(client, H):
     body = dict(decision="follow_up", final_grades={"right": 2, "left": 2}, notes="x")
     assert client.post(f"/screenings/{sid}/reviews", json=body, headers=H["doctor2"]).status_code == 404
     assert client.post(f"/screenings/{sid}/release", headers=H["doctor2"]).status_code == 404
+
+def test_doctor_sees_only_own_patients_and_own_readable_audit(client, H):
+    sent, unsent = new_patient(client, H["nurse1"]), new_patient(client, H["nurse1"])
+    payload, files = build(sent["id"], send=True, doctor="doctor1")
+    sid = post_sync(client, H["nurse1"], payload, files).json()["id"]
+    ids = {x["id"] for x in client.get("/patients", headers=H["doctor1"]).json()}
+    assert sent["id"] in ids and unsent["id"] not in ids
+    assert client.get(f"/patients/{unsent['id']}", headers=H["doctor1"]).status_code == 404
+    mine = client.get("/audit", headers=H["doctor1"]).json()
+    assert all(isinstance(x["detail"], str) and "hash" not in x for x in mine)
+    other = client.get("/audit", headers=H["doctor2"]).json()
+    assert not any(sid in x["detail"] for x in other)

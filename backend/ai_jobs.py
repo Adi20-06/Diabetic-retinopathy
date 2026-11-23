@@ -2,7 +2,8 @@ import json, datetime as dt
 from sqlalchemy import or_, func
 import models as M, storage, pipeline, audit
 from settings import AI_MODE
-from logging_setup import log
+from logging_setup import log, LOGDIR
+import threading, time
 
 MAX_ATTEMPTS = 3
 STALE_MIN = 10            # a job "running" this long is assumed to belong to a crashed worker
@@ -21,9 +22,11 @@ def process(db, s):
         r.ai = clean({**out, "referable": out["referable_prob"] >= pipeline.CAL["ref_thr"], "uncertain": out["triage"] == "Uncertain"})
 
 def after_send(db, s):
-    """Called by the API when a case is sent to a doctor. In queue mode the job just waits for a worker."""
+    """Called by the API when a case is sent to a doctor."""
     if AI_MODE == "inline":
         process(db, s); s.ai_state, s.ai_finished_at = "done", M.now()
+    else:
+        wake()                      # embedded: wake the background thread now; queue: harmless
 
 def claim(db):
     """Take one waiting job. SKIP LOCKED means two workers can never take the same one."""
@@ -72,3 +75,30 @@ def stats(session_factory):
         oldest = live.with_entities(func.min(M.Screening.sent_to_doctor)).scalar()
         return dict(queued=live.count(), failed=db.query(M.Screening).filter_by(ai_state="failed").count(),
                     oldest_wait_s=int((M.now() - oldest).total_seconds()) if oldest else 0)
+
+# ---- embedded worker: a background thread inside the API process ----
+_wake = threading.Event()
+_thread = None
+
+def wake(): _wake.set()
+
+def heartbeat():
+    (LOGDIR / "worker.json").write_text(json.dumps({"t": time.time(), **stats(M.SessionLocal)}))
+
+def _loop():
+    log.info("embedded AI worker started")
+    beat = 0.0
+    while True:
+        try:
+            worked = run_one(M.SessionLocal)
+            if time.time() - beat > 10: heartbeat(); beat = time.time()
+        except Exception:
+            log.exception("embedded AI worker error"); worked = False; time.sleep(5)
+        if not worked:
+            _wake.wait(timeout=3); _wake.clear()          # sleep until woken, or look again after 3 s
+
+def start_embedded():
+    global _thread
+    if AI_MODE != "embedded" or _thread: return
+    _thread = threading.Thread(target=_loop, daemon=True, name="ai-worker")
+    _thread.start()

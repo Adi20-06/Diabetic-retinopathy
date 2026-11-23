@@ -86,6 +86,10 @@ def review_json(v):
     return dict(by=v.by, decision=v.decision, final_grades=v.final_grades, overrides=bool(v.overrides),
                 notes=v.notes, follow_up=v.follow_up, at=iso(v.at))
 
+def person(db, username):
+    x = db.get(M.User, username)
+    return x.name if x else username
+
 def staff_view(db, s, role, full=True):
     p, recs = db.get(M.Patient, s.patient_id), eyes_of(db, s.id)
     d = dict(id=s.id, client_id=s.client_id, patient_id=s.patient_id, patient_name=p.name if p else None,
@@ -99,7 +103,9 @@ def staff_view(db, s, role, full=True):
     if role == "doctor":
         d["ai_error"] = s.ai_error
         d["priority"] = priority(recs)
-        d["reviews"] = [review_json(v) for v in reviews_of(db, s.id)]
+        revs = reviews_of(db, s.id)
+        who = {x.username: x.name for x in db.query(M.User).filter(M.User.username.in_({v.by for v in revs}))} if revs else {}
+        d["reviews"] = [{**review_json(v), "by": who.get(v.by, v.by), "by_username": v.by} for v in revs]
     return d
 
 def patient_view(db, s):
@@ -108,7 +114,7 @@ def patient_view(db, s):
     revs = reviews_of(db, s.id)
     if s.report_released and revs:
         v = revs[-1]
-        d["report"] = dict(decision=v.decision, follow_up=v.follow_up, final_grades=v.final_grades, notes=v.notes, by=v.by, at=iso(v.at))
+        d["report"] = dict(decision=v.decision, follow_up=v.follow_up, final_grades=v.final_grades, notes=v.notes, by=person(db, v.by), at=iso(v.at))
         d["eyes"] = {r.eye: dict(image_url=storage.url("fundus", r.processing_key),
                                  heatmap_url=storage.url("heatmaps", r.heatmap_key) if r.heatmap_key else None)
                      for r in eyes_of(db, s.id)}
@@ -231,11 +237,14 @@ def get_screening(sid: str, db: Session = Depends(M.get_db), u=Depends(auth.curr
 
 @router.get("/patients/{pid}/screenings")
 def patient_screenings(pid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user)):
-    if u.role == "patient" and u.patient_id != pid: raise HTTPException(403, "Not your record")
-    if u.role != "patient": auth.ensure_centre(db, u, pid)
-    qs = db.query(M.Screening).filter_by(patient_id=pid)
-    if u.role == "doctor": qs = qs.filter(or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
-    qs = qs.order_by(M.Screening.created_at.desc())
+    if u.role == "patient":
+        if u.patient_id != pid: raise HTTPException(403, "Not your record")
+    else:
+        auth.ensure_centre(db, u, pid)
+    qs = db.query(M.Screening).filter_by(patient_id=pid).order_by(M.Screening.created_at.desc())
+    if u.role == "doctor":
+        qs = qs.filter(M.Screening.sent_to_doctor.isnot(None),
+                       or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
     return [view_for(db, s, u, full=False) for s in qs]
 
 # ---------- doctor actions ----------
@@ -306,18 +315,33 @@ def _analytics(db, u):
                 grade_distribution=grades, ai_doctor_agreement=(agree / rev_eyes) if rev_eyes else None,
                 quality_failures=dict(fails), per_day=per_day)
 
+def describe_audit(r, me, names):
+    d, a, sid = r.detail or {}, r.action, r.screening_id
+    nm = lambda x: names.get(x, x)
+    nice = lambda x: str(x or "").replace("_", " ")
+    if a == "login": return "You signed in" + (f" from {d['ip']}" if d.get("ip") else "")
+    if a == "login_failed": return "A wrong password was entered for your account" + (f" (from {d['ip']})" if d.get("ip") else "")
+    if a == "password_changed": return "You changed your password"
+    if a == "password_reset":
+        return "You reset a password" if d.get("by") == me else f"Your password was reset by {nm(d.get('by'))}"
+    if a == "doctor_review":
+        return f"You recorded a review for case {sid}: {nice(d.get('decision'))}" + (" (you changed the AI grade)" if d.get("overrides") else "")
+    if a == "report_released": return f"You released the report for case {sid} to the patient"
+    if a == "ai_retry": return f"You asked for the AI to run again on case {sid}"
+    if a == "doctor_assigned": return f"{nm(d.get('by'))} sent case {sid} to you"
+    return nice(a).capitalize() + (f" (case {sid})" if sid else "")
+
 @router.get("/audit")
 def audit_list(limit: int = 300, db: Session = Depends(M.get_db), u=Depends(auth.require("doctor"))):
-    staff = {x for (x,) in db.query(M.User.username).filter(M.User.centre_id == u.centre_id)}
-    pats = {x for (x,) in db.query(M.Patient.id).filter(M.Patient.centre_id == u.centre_id)}
-    scr = {x for (x,) in db.query(M.Screening.id).join(M.Patient, M.Patient.id == M.Screening.patient_id)
-                         .filter(M.Patient.centre_id == u.centre_id)}
+    me = u.username
+    names = {x.username: x.name for x in db.query(M.User).filter(M.User.centre_id == u.centre_id)}
     def mine(r):
         d = r.detail or {}
-        return r.screening_id in scr or d.get("by") in staff or d.get("username") in staff or d.get("patient_id") in pats
-    rows = db.query(M.Audit).order_by(M.Audit.id.desc()).limit(2000).all()
-    return [dict(id=r.id, ts=r.ts, action=r.action, screening_id=r.screening_id, detail=r.detail, hash=r.hash)
-            for r in rows if mine(r)][:min(limit, 1000)]
+        return d.get("by") == me or str(d.get("username", "")).lower() == me.lower() or d.get("doctor") == me
+    rows = db.query(M.Audit).order_by(M.Audit.id.desc()).limit(5000).all()
+    out = [dict(id=r.id, ts=r.ts, action=r.action, screening_id=r.screening_id, detail=describe_audit(r, me, names))
+           for r in rows if mine(r)]
+    return out[:min(limit, 1000)]
 
 class AssignIn(BaseModel): doctor: str
 

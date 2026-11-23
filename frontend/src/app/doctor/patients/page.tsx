@@ -13,9 +13,10 @@ export default function Page() {
   if (!db) return null;
 
   const term = q.trim().toLowerCase();
-  const list = db.patients.filter((p) => !term || p.name.toLowerCase().includes(term) || p.id.toLowerCase().includes(term) || p.mobile.includes(term));
+  const mine = new Set(db.screenings.filter((s) => s.sentToDoctor).map((s) => s.patientId));   // only patients with a case sent to this doctor
+  const list = db.patients.filter((p) => mine.has(p.id) && (!term || p.name.toLowerCase().includes(term) || p.id.toLowerCase().includes(term) || p.mobile.includes(term)));
   const p = db.patients.find((x) => x.id === sel);
-  const history = db.screenings.filter((s) => s.patientId === sel).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const history = db.screenings.filter((s) => s.patientId === sel && s.sentToDoctor).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   return (
     <>

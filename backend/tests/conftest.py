@@ -1,4 +1,5 @@
 import os, sys, types
+os.environ["AI_MODE"] = "queue"
 import numpy as np
 import pytest
 from sqlalchemy import create_engine, text

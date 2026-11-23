@@ -10,7 +10,10 @@ export async function refreshAll(role: Role) {
   try {
     if (role === "patient") {
       const pid = getSession()?.id;
-      if (pid) mergeServerScreenings((await api<PatientView[]>(`/patients/${pid}/screenings`)).map((x) => fromPatientView(x, pid)), role);
+      if (pid) {
+        replacePatients([toPatient(await api<ServerPatient>(`/patients/${pid}`))]);          // the patient's own record
+        mergeServerScreenings((await api<PatientView[]>(`/patients/${pid}/screenings`)).map((x) => fromPatientView(x, pid)), role);
+      }
     } else {
       replacePatients((await api<ServerPatient[]>("/patients")).map(toPatient));
       mergeServerScreenings((await api<ServerScreening[]>("/screenings?full=true")).map(fromStaff), role);

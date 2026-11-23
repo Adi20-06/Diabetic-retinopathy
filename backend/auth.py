@@ -1,6 +1,7 @@
 import os, re, hmac, hashlib, secrets, time, datetime as dt
 import jwt
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select, or_
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import models as M
@@ -121,3 +122,10 @@ def ensure_centre(db: Session, u, patient_id: str):
     if not p or p.centre_id != u.centre_id: raise HTTPException(404, "Not found")
     return p
 
+def doctor_patient_ids(u):
+    """Patients that have a case sent to this doctor (or an old unassigned case)."""
+    return select(M.Screening.patient_id).where(M.Screening.sent_to_doctor.isnot(None),
+            or_(M.Screening.assigned_to == u.username, M.Screening.assigned_to.is_(None)))
+
+def doctor_can_see(db, u, pid) -> bool:
+    return db.scalar(doctor_patient_ids(u).where(M.Screening.patient_id == pid).limit(1)) is not None

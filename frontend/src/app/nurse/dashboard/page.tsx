@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Plus, Wifi, WifiOff } from "lucide-react";
 import { Card, PageHeader, StatCard, buttonStyles } from "@/components/ui";
 import StatusBadge from "@/components/StatusBadge";
-import { formatDateTime, isToday, resetDemo, useDb } from "@/lib/db";
+import { formatDateTime, isToday, useDb } from "@/lib/db";
 import { useOnline } from "@/lib/online";
 
 export default function NurseDashboard() {
@@ -89,10 +89,6 @@ export default function NurseDashboard() {
         </Card>
       </div>
 
-      <p className="mt-8 text-xs text-muted-strong">
-        Sample data.{" "}
-        <button type="button" onClick={resetDemo} className="font-medium text-navy underline underline-offset-4">Reset demo data</button>
-      </p>
     </>
   );
 }

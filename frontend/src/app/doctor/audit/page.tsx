@@ -5,7 +5,7 @@ import { Button, Card, PageHeader, inputClass } from "@/components/ui";
 import { api } from "@/lib/api";
 import { formatDateTime, useDb, type Eye } from "@/lib/db";
 
-type Row = { id: number; ts: string; action: string; screening_id: string | null; detail: Record<string, unknown> | null; hash: string };
+type Row = { id: number; ts: string; action: string; screening_id: string | null; detail: string };
 type Chain = { valid: boolean; broken_at_id?: number };
 
 export default function Page() {
@@ -23,49 +23,42 @@ export default function Page() {
 
   if (!db) return null;
   const term = q.trim().toLowerCase();
-  const shown = rows.filter((r) => !term || `${r.action} ${r.screening_id ?? ""} ${JSON.stringify(r.detail)}`.toLowerCase().includes(term));
+  const shown = rows.filter((r) => !term || `${r.detail} ${r.screening_id ?? ""}`.toLowerCase().includes(term));
   const lineage = db.screenings.flatMap((s) => (["right", "left"] as Eye[]).filter((e) => s.images?.[e]?.checksum).map((e) => ({ s, e, sha: s.images![e]!.checksum })));
 
   function exportCsv() {
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-    const csv = ["id,time,screening,action,detail,hash", ...shown.map((r) => [String(r.id), r.ts, r.screening_id ?? "", r.action, JSON.stringify(r.detail ?? {}), r.hash].map(esc).join(","))].join("\n");
+    const csv = ["time,case,what happened", ...shown.map((r) => [formatDateTime(r.ts), r.screening_id ?? "", r.detail].map(esc).join(","))].join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = "audit-trail.csv";
+    a.download = "my-audit-trail.csv";
     a.click();
   }
 
   return (
     <>
-      <PageHeader title="Audit Trail" subtitle="Every action is recorded in a tamper-evident chain." action={<Button variant="ghost" onClick={exportCsv}><Download className="size-4" aria-hidden="true" /> Export CSV</Button>} />
+      <PageHeader title="Audit Trail" subtitle="Your own actions, recorded in a tamper-evident log." action={<Button variant="ghost" onClick={exportCsv}><Download className="size-4" aria-hidden="true" /> Export CSV</Button>} />
       {error && <p role="alert" className="mb-4 rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">{error}</p>}
       {chain && (
         <div role="status" className={`mb-6 flex items-center gap-3 rounded-xl p-4 text-sm ${chain.valid ? "bg-ok-bg text-ok" : "bg-danger-bg text-danger"}`}>
           {chain.valid ? <ShieldCheck className="size-5" aria-hidden="true" /> : <ShieldAlert className="size-5" aria-hidden="true" />}
-          {chain.valid ? "Chain verified: no record has been changed or removed." : `Chain broken at record #${chain.broken_at_id}. The log was altered after it was written.`}
+          {chain.valid ? "Log verified: no record has been changed or removed." : "The log failed verification. Tell the administrator."}
         </div>
       )}
 
       <Card className="overflow-x-auto">
-        <input className={`${inputClass} mb-4 max-w-sm`} placeholder="Filter by screening, user or action" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter audit events" />
-        <table className="w-full min-w-[820px] text-left text-sm">
-          <thead><tr className="text-xs uppercase tracking-wide text-muted-strong"><th className="py-2">#</th><th className="py-2">Time</th><th className="py-2">Screening</th><th className="py-2">User</th><th className="py-2">Action</th><th className="py-2">Detail</th><th className="py-2">Hash</th></tr></thead>
+        <input className={`${inputClass} mb-4 max-w-sm`} placeholder="Filter by case or words" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter audit events" />
+        <table className="w-full min-w-[620px] text-left text-sm">
+          <thead><tr className="text-xs uppercase tracking-wide text-muted-strong"><th className="py-2">Time</th><th className="py-2">Case</th><th className="py-2">What happened</th></tr></thead>
           <tbody>
-            {shown.map((r) => {
-              const { by, ...rest } = (r.detail ?? {}) as Record<string, unknown>;
-              return (
-                <tr key={r.id} className="border-t border-deep/10 align-top">
-                  <td className="py-3 text-muted-strong">{r.id}</td>
-                  <td className="py-3 text-muted-strong">{formatDateTime(r.ts)}</td>
-                  <td className="py-3 font-medium text-deep">{r.screening_id ?? "-"}</td>
-                  <td className="py-3">{String(by ?? "system")}</td>
-                  <td className="py-3 font-medium text-deep">{r.action.replace(/_/g, " ")}</td>
-                  <td className="max-w-xs break-words py-3 text-xs text-ink">{Object.keys(rest).length ? JSON.stringify(rest).slice(0, 160) : ""}</td>
-                  <td className="py-3 font-mono text-xs text-muted-strong" title={r.hash}>{r.hash.slice(0, 10)}…</td>
-                </tr>
-              );
-            })}
-            {shown.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-muted-strong">No events.</td></tr>}
+            {shown.map((r) => (
+              <tr key={r.id} className="border-t border-deep/10 align-top">
+                <td className="py-3 text-muted-strong">{formatDateTime(r.ts)}</td>
+                <td className="py-3 font-medium text-deep">{r.screening_id ?? "-"}</td>
+                <td className="py-3 text-ink">{r.detail}</td>
+              </tr>
+            ))}
+            {shown.length === 0 && <tr><td colSpan={3} className="py-6 text-center text-muted-strong">No events.</td></tr>}
           </tbody>
         </table>
       </Card>

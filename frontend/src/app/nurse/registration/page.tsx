@@ -81,8 +81,7 @@ export default function RegistrationPage() {
         <Card>
           <form ref={formRef} onSubmit={(e) => { e.preventDefault(); save(false); }} className="flex flex-col gap-5">
             <div className="rounded-xl bg-page px-4 py-3 text-sm">
-              <span className="text-muted-strong">Patient ID (automatic): </span>
-              <strong className="text-deep">assigned when saved</strong>
+              <strong className="text-deep">Patient ID: </strong>
             </div>
             <Field id="name" name="name" label="Patient name" required />
             <div className="grid gap-5 sm:grid-cols-3">

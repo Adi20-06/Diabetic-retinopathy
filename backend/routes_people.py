@@ -31,6 +31,8 @@ def aj(a):
 @router.get("/patients")
 def search(q: str = "", pg: Page = Depends(), db: Session = Depends(M.get_db), u=Depends(auth.require("nurse", "doctor"))):
     qs = db.query(M.Patient).filter(M.Patient.centre_id == u.centre_id, M.Patient.anonymized_at.is_(None))
+    if u.role == "doctor":                                    # a doctor sees only patients whose case was sent to them
+        qs = qs.filter(M.Patient.id.in_(auth.doctor_patient_ids(u)))
     if q.strip():
         t = f"%{q.strip()}%"
         qs = qs.filter(or_(M.Patient.name.ilike(t), M.Patient.id.ilike(t), M.Patient.mobile.like(t)))
@@ -78,6 +80,8 @@ def get(pid: str, db: Session = Depends(M.get_db), u=Depends(auth.current_user))
         if not p: raise HTTPException(404, "Patient not found")
     else:
         p = auth.ensure_centre(db, u, pid)
+        if u.role == "doctor" and not auth.doctor_can_see(db, u, pid):
+            raise HTTPException(404, "Not found")
     return pj(p)
 
 @router.post("/patients/{pid}/verify")

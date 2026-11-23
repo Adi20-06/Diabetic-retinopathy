@@ -18,6 +18,8 @@ setup_logging()
 import pipeline
 from fastapi.responses import JSONResponse
 from contextlib import contextmanager
+from routes_backup import router as backup_router
+
 
 PROD = ENV == "production"
 MAX_BODY = 90 * 1024 * 1024
@@ -58,6 +60,7 @@ app.include_router(routes_auth.router)
 app.include_router(routes_people.router)
 app.include_router(routes_screenings.router)
 app.include_router(routes_admin.router)
+app.include_router(backup_router)
 
 CENTRES = [("PHC-001", "Kolar Rural PHC", "Kolar"), ("PHC-002", "Mulbagal PHC", "Kolar")]
 STAFF = [  # username, role, name, centre
@@ -146,6 +149,8 @@ def startup():
     with startup_lock():
         run_migrations()           # keep your existing seed call exactly as it is
         with M.SessionLocal() as db: seed(db)
+
+import ai_jobs; ai_jobs.start_embedded()
 
 def db_ok():
     try:

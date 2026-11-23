@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, UserPlus, UserCheck, ClipboardList, Camera, ShieldCheck, RefreshCw,
   ClipboardCheck, CloudUpload, History, Users, Eye, Stethoscope, FileText, Activity,
-  ScrollText, User, CalendarDays, Bell, LifeBuoy, KeyRound, type LucideIcon,
+  ScrollText, User, CalendarDays, Bell, LifeBuoy, KeyRound, Database , type LucideIcon,
 } from "lucide-react";
 
 export type Role = "nurse" | "doctor" | "patient" | "admin";
@@ -28,7 +28,9 @@ export const NAV: Record<Role, NavItem[]> = {
     { label: "Offline Queue & Sync", href: "/nurse/sync", icon: CloudUpload },
     { label: "Screening History", href: "/nurse/history", icon: History },
     { label: "Appointments", href: "/nurse/appointments", icon: CalendarDays },
+    { label: "Backup", href: "/nurse/backup", icon: Database },
     { label: "Change Password", href: "/change-password", icon: KeyRound },
+    
   ],
   doctor: [
     { label: "Dashboard", href: "/doctor/dashboard", icon: LayoutDashboard },

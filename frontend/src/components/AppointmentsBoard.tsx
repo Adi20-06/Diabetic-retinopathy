@@ -10,6 +10,7 @@ export default function AppointmentsBoard() {
   const pd = usePatientData();
   const [show, setShow] = useState<"requested" | "all">("requested");
   const [error, setError] = useState("");
+  const [spin, setSpin] = useState(false);
 
   useEffect(() => {                       // load now, then check for new requests every 30 seconds
     const go = () => refreshAppts().catch(() => {});
@@ -25,6 +26,14 @@ export default function AppointmentsBoard() {
     .filter((a) => show === "all" || a.status === "requested")
     .sort((a, b) => a.date.localeCompare(b.date));
 
+  async function refresh() {
+    setError(""); setSpin(true);
+    const started = Date.now();
+    try { await refreshAppts(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Could not refresh."); }
+    finally { setTimeout(() => setSpin(false), Math.max(0, 600 - (Date.now() - started))); }   // spins at least 0.6 s, so a fast refresh is still visible
+  }
+
   async function confirm(id: string) {
     setError("");
     try { await confirmAppointment(id); } catch (e) { setError(e instanceof Error ? e.message : "Could not confirm."); }
@@ -35,7 +44,7 @@ export default function AppointmentsBoard() {
       <PageHeader
         title="Appointments"
         subtitle={`${waiting} request${waiting === 1 ? "" : "s"} waiting for confirmation.`}
-        action={<Button variant="ghost" onClick={() => refreshAppts().catch((e) => setError(e.message))}><RefreshCw className="size-4" aria-hidden="true" /> Refresh</Button>}
+        action={<Button variant="ghost" onClick={refresh} disabled={spin}><RefreshCw className={`size-4 ${spin ? "animate-spin" : ""}`} aria-hidden="true" /> {spin ? "Refreshing" : "Refresh"}</Button>}
       />
       <Card className="overflow-x-auto">
         <div className="mb-4 flex gap-2" role="tablist" aria-label="Filter">
